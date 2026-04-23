@@ -1,0 +1,51 @@
+{
+  "store": "maxima",
+  "url": "https://www.maxima.lt/pasiulymai",
+  "type": "dynamic",
+  "container": ".swiper-slide .card.card-small",
+
+  "selectors": {
+    "name": "h4.text-truncate",
+    "price": {
+      "format": "split",
+      "integer": ".offer-price-tag__price-integer",
+      "fraction": ".offer-price-tag__price-fraction"
+    },
+    "oldPrice": ".offer-price-tag__old-price",
+    "discount": {
+      "format": "fallback",
+      "options": [
+        ".offer-price-tag__bottom-discount",
+        {
+          "format": "composed",
+          "parts": [".offer-price-tag__discount-value", ".offer-price-tag__discount-percent"]
+        }
+      ]
+    },
+    "condition": ".offer-price-tag__benefit",
+    "unitPrice": ".offer-price-tag__meta-comparison",
+    "image": {
+      "selector": ".offer-image img",
+      "attribute": "src"
+    },
+    "validDates": ".offer-price-tag__meta-date",
+    "url": {
+      "selector": ".card-body",
+      "attribute": "data-action",
+      "regex": ""
+    }
+  },
+
+  "loyaltyCard": {
+    "indicator": ".offer-price-tag__icon img[alt*='AČIŪ'], .offer-price-tag__icon img[alt*='Aciu']"
+  },
+
+  "transforms": {
+    "name": ["trim", "collapseWhitespace"],
+    "oldPrice": ["stripCurrency", "commaToDecimal"],
+    "discount": ["trim"],
+    "condition": ["trim", "collapseWhitespace"],
+    "unitPrice": ["trim"],
+    "validDates": ["trim", "stripPrefix"]
+  }
+}

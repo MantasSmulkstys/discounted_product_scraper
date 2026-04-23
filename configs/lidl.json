@@ -1,0 +1,65 @@
+{
+  "store": "lidl",
+  "url": "https://www.lidl.lt/c/svarbiausios-sios-savaites-akcijos/a10023711",
+  "type": "dynamic",
+  "container": ".product-grid-box",
+  "waitFor": ".product-grid-box",
+
+  "dismiss": [
+    "#onetrust-accept-btn-handler",
+    "button[data-testid='cookie-accept-all']",
+    ".cookie-alert-extended-button"
+  ],
+
+  "scroll": {
+    "mode": "incremental",
+    "step": 1500,
+    "batchScrolls": 6,
+    "rounds": 12,
+    "countSelector": ".product-grid-box",
+    "maxScrolls": 20,
+    "delay": 1.2
+  },
+
+  "loadMore": {
+    "selector": "button.ux-masonry-grid__expand, button.odsc-pager__load-more, button[data-testid='load-more'], a.nuc-a-button--showmore",
+    "text": "Rodyti daugiau",
+    "countSelector": ".product-grid-box",
+    "maxClicks": 30,
+    "delay": 2
+  },
+
+  "viewport": {
+    "width": 1400,
+    "height": 2000
+  },
+
+  "selectors": {
+    "name": ".product-grid-box__title",
+    "price": {
+      "format": "single",
+      "selector": ".ods-price__value"
+    },
+    "unitPrice": {
+      "selector": ".ods-price__footer",
+      "regex": "^([^<\\n]+)"
+    },
+    "image": {
+      "selector": ".odsc-image-gallery__image",
+      "attribute": "src"
+    },
+    "validDates": ".ods-badge__label",
+    "url": {
+      "selector": "a.odsc-tile__link",
+      "attribute": "href",
+      "baseUrl": "https://www.lidl.lt"
+    }
+  },
+
+  "transforms": {
+    "name": ["trim", "collapseWhitespace"],
+    "price": ["stripCurrency", "commaToDecimal"],
+    "unitPrice": ["firstLine", "trim"],
+    "validDates": ["trim"]
+  }
+}

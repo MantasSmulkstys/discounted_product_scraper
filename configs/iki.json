@@ -1,0 +1,45 @@
+{
+  "store": "iki",
+  "url": "https://iki.lt/akcijos/savaites-akcijos/",
+  "type": "dynamic",
+  "container": ".akcijoskortele",
+
+  "scroll": {
+    "delay": 1.5,
+    "maxScrolls": 50
+  },
+
+  "selectors": {
+    "name": ".akcija_title",
+    "price": {
+      "format": "split",
+      "integer": ".price_int",
+      "fraction": ".price_cents .sub"
+    },
+    "image": {
+      "selector": ".akcija__image img",
+      "attribute": "src"
+    },
+    "validDates": {
+      "selector": ".akcija_description.text-center",
+      "regex": "Galioja:\\s*(.+)"
+    },
+    "discount": {
+      "format": "composed",
+      "parts": [
+        ".price_block_rounded_red_wrapper .minus",
+        ".price_block_rounded_red_wrapper .main",
+        ".price_block_rounded_red_wrapper .percentage"
+      ]
+    }
+  },
+
+  "loyaltyCard": {
+    "indicator": ".card_tag, .card img[alt*='IKI Card']"
+  },
+
+  "transforms": {
+    "name": ["trim", "collapseWhitespace"],
+    "validDates": ["trim"]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "store": "norfa",
+  "url": "https://www.norfa.lt/akciju-puslapiai/praktiski-pasiulymai/",
+  "type": "static",
+  "container": ".c-product",
+
+  "selectors": {
+    "name": ".c-product__name",
+    "price": {
+      "format": "single",
+      "selector": ".c-product__price"
+    },
+    "oldPrice": ".c-product__old-price",
+    "discount": ".c-product__discount",
+    "image": {
+      "selector": ".c-product__media img",
+      "attribute": "src",
+      "baseUrl": "https://www.norfa.lt"
+    },
+    "validDates": {
+      "selector": ".c-more-info__content",
+      "regex": "Galioja\\s*(.+?)\\s*d\\."
+    }
+  },
+
+  "transforms": {
+    "name": ["trim", "collapseWhitespace"],
+    "price": ["stripCurrency", "commaToDecimal"],
+    "oldPrice": ["stripCurrency", "commaToDecimal"],
+    "discount": ["trim"],
+    "validDates": ["trim"]
+  }
+}

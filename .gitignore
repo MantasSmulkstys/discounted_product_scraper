@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Env/secrets
+.env
+*.key
+*.pem
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+output/
+data/tmp/
+logs/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/

@@ -1,0 +1,44 @@
+{
+  "store": "rimi",
+  "url": "https://www.rimi.lt/e-parduotuve/lt/akcijos",
+  "type": "dynamic",
+  "container": ".js-product-container.card",
+
+  "pagination": {
+    "param": "currentPage",
+    "startPage": 1,
+    "pageSize": 40,
+    "pageSizeParam": "pageSize",
+    "maxPages": 2
+  },
+
+  "selectors": {
+    "name": ".card__name",
+    "price": {
+      "format": "attribute",
+      "selector": ".price-tag.card__price",
+      "attribute": "aria-label",
+      "regex": "([\\d.,]+)\\s*€"
+    },
+    "oldPrice": {
+      "selector": ".old-price-tag.card__old-price",
+      "attribute": "aria-label",
+      "regex": "([\\d.,]+)\\s*€"
+    },
+    "unitPrice": ".card__price-per",
+    "image": {
+      "selector": ".card__image-wrapper img",
+      "attribute": "data-src"
+    },
+    "url": {
+      "selector": "a.card__url",
+      "attribute": "href",
+      "baseUrl": "https://www.rimi.lt"
+    }
+  },
+
+  "transforms": {
+    "name": ["trim"],
+    "unitPrice": ["trim", "collapseWhitespace"]
+  }
+}
