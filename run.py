@@ -77,7 +77,75 @@ def print_summary(products: list[Product]) -> None:
         if len(products) > 5:
             safe_print(f"  ... and {len(products) - 5} more")
 
-def main():
+def _scrape_products(configs: list[StoreConfig]) -> list[Product]:
+    fetcher = Fetcher()
+    all_products: list[Product] = []
+    try:
+        for config in configs:
+            scraper = BaseScraper(config, fetcher=fetcher)
+            products = scraper.scrape()
+            all_products.extend(products)
+    finally:
+        fetcher.close()
+    return all_products
+
+
+def run_scrape_pipeline(
+    *,
+    store_filter: list[str] | None = None,
+    output: str = "json",
+    db_config: DBConfig | None = None,
+    dry_run: bool = False,
+) -> list[Product]:
+    configs = load_configs(store_filter)
+    if not configs:
+        raise ValueError("No configs found. Check the configs/ directory.")
+
+    logger.info("Loaded %d store configs: %s", len(configs), [c.store for c in configs])
+
+    if dry_run:
+        for c in configs:
+            print(f"  [{c.store}] {c.url} (type={c.type}, container='{c.container}')")
+        return []
+
+    all_products = _scrape_products(configs)
+
+    if output == "json":
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        out_path = OUTPUT_DIR / f"products_{timestamp}.json"
+        save_json(all_products, out_path)
+
+    elif output == "jsonl":
+        for p in all_products:
+            print(json.dumps(p.to_dict(), ensure_ascii=False))
+
+    elif output == "stdout":
+        pass
+
+    elif output == "db":
+        effective_db_config = db_config or DBConfig(
+            host=os.getenv("PGHOST", "localhost"),
+            port=int(os.getenv("PGPORT", "5432")),
+            dbname=os.getenv("PGDATABASE", "discount_tracker"),
+            user=os.getenv("PGUSER", "postgres"),
+            password=os.getenv("PGPASSWORD"),
+        )
+        batch_source_name = configs[0].store if len(configs) == 1 else "multi_store_scrape"
+        inserted = save_raw_offers(
+            all_products,
+            configs,
+            effective_db_config,
+            source_name=batch_source_name,
+        )
+        logger.info("Saved %d products to raw_offers", inserted)
+    else:
+        raise ValueError(f"Unsupported output mode: {output}")
+
+    print_summary(all_products)
+    return all_products
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description="Universal Discount Product Scraper")
     parser.add_argument(
         "--store", "-s",
@@ -101,59 +169,23 @@ def main():
         help="Load configs and show what would be scraped without fetching",
     )
     args = parser.parse_args()
-
-    configs = load_configs(args.store)
-    if not configs:
-        logger.error("No configs found. Check the configs/ directory.")
-        sys.exit(1)
-
-    logger.info("Loaded %d store configs: %s", len(configs), [c.store for c in configs])
-
-    if args.dry_run:
-        for c in configs:
-            print(f"  [{c.store}] {c.url} (type={c.type}, container='{c.container}')")
-        return
-
-    fetcher = Fetcher()
-    all_products: list[Product] = []
-
     try:
-        for config in configs:
-            scraper = BaseScraper(config, fetcher=fetcher)
-            products = scraper.scrape()
-            all_products.extend(products)
-    finally:
-        fetcher.close()
-
-    if args.output == "json":
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        out_path = OUTPUT_DIR / f"products_{timestamp}.json"
-        save_json(all_products, out_path)
-
-    elif args.output == "jsonl":
-        for p in all_products:
-            print(json.dumps(p.to_dict(), ensure_ascii=False))
-
-    elif args.output == "stdout":
-        pass
-
-    elif args.output == "db":
-        batch_source_name = configs[0].store if len(configs) == 1 else "multi_store_scrape"
-        inserted = save_raw_offers(
-            all_products,
-            configs,
-            DBConfig(
+        run_scrape_pipeline(
+            store_filter=args.store,
+            output=args.output,
+            db_config=DBConfig(
                 host=args.db_host,
                 port=args.db_port,
                 dbname=args.db_name,
                 user=args.db_user,
                 password=args.db_password,
             ),
-            source_name=batch_source_name,
+            dry_run=args.dry_run,
         )
-        logger.info("Saved %d products to raw_offers", inserted)
-
-    print_summary(all_products)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

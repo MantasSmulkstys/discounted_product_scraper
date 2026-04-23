@@ -530,37 +530,19 @@ def _truncate_error(error: str, max_len: int = 500) -> str:
     return message[: max_len - 3] + "..."
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Process raw_offers with deterministic fallback normalization into "
-            "normalized_products, product_variants, and offer_snapshots."
-        )
-    )
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=50)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--use-ai", action="store_true")
-    parser.add_argument("--openai-api-key", default=os.getenv("OPENAI_API_KEY"))
-    parser.add_argument("--db-host", default=os.getenv("PGHOST", "localhost"))
-    parser.add_argument("--db-port", type=int, default=int(os.getenv("PGPORT", "5432")))
-    parser.add_argument("--db-name", default=os.getenv("PGDATABASE", "discount_tracker"))
-    parser.add_argument("--db-user", default=os.getenv("PGUSER", "postgres"))
-    parser.add_argument("--db-password", default=os.getenv("PGPASSWORD"))
-    args = parser.parse_args()
-
-    if args.batch_size <= 0:
+def run_normalization(
+    *,
+    db_config: DBConfig,
+    limit: int | None = None,
+    batch_size: int = 50,
+    dry_run: bool = False,
+    use_ai: bool = False,
+    openai_api_key: str | None = None,
+) -> int:
+    if batch_size <= 0:
         raise ValueError("--batch-size must be > 0")
-    if args.limit is not None and args.limit < 0:
+    if limit is not None and limit < 0:
         raise ValueError("--limit must be >= 0")
-
-    db_config = DBConfig(
-        host=args.db_host,
-        port=args.db_port,
-        dbname=args.db_name,
-        user=args.db_user,
-        password=args.db_password,
-    )
 
     total_selected = 0
     total_processed = 0
@@ -569,28 +551,28 @@ def main() -> int:
     total_skipped = 0
     batch_no = 0
     offset = 0
-    openai_client = _get_openai_client(args.openai_api_key) if args.use_ai else None
+    openai_client = _get_openai_client(openai_api_key) if use_ai else None
     allowed_categories: list[dict[str, Any]] = []
 
     try:
         with _connect(db_config) as conn:
             with conn.cursor() as cur:
-                if args.use_ai:
+                if use_ai:
                     allowed_categories = load_allowed_categories(cur)
                     logger.info("Loaded %d allowed categories for AI normalization.", len(allowed_categories))
                     if openai_client is None:
                         logger.warning("AI mode requested but no client available; deterministic fallback will be used.")
 
                 while True:
-                    remaining = None if args.limit is None else args.limit - total_selected
+                    remaining = None if limit is None else limit - total_selected
                     if remaining is not None and remaining <= 0:
                         break
 
-                    requested_batch = args.batch_size if remaining is None else min(args.batch_size, remaining)
+                    requested_batch = batch_size if remaining is None else min(batch_size, remaining)
                     rows = _fetch_candidates(
                         cur,
                         batch_size=requested_batch,
-                        offset=offset if args.dry_run else 0,
+                        offset=offset if dry_run else 0,
                     )
                     if not rows:
                         break
@@ -601,7 +583,7 @@ def main() -> int:
                         "Batch %d start: %d rows (dry_run=%s)",
                         batch_no,
                         len(rows),
-                        args.dry_run,
+                        dry_run,
                     )
 
                     for row in rows:
@@ -611,7 +593,7 @@ def main() -> int:
                         total_processed += 1
 
                         try:
-                            if not args.dry_run:
+                            if not dry_run:
                                 _mark_processing(cur, raw_offer_id)
                                 conn.commit()
 
@@ -621,14 +603,14 @@ def main() -> int:
                             normalization_version = "deterministic_v1"
                             chosen_result = build_fallback_ai_result(preprocessed)
 
-                            if args.use_ai and openai_client is not None:
+                            if use_ai and openai_client is not None:
                                 ai_used = True
                                 try:
                                     ai_input = build_ai_input(preprocessed, allowed_categories)
 
                                     import time
                                     time.sleep(0.3)
-                                    
+
                                     ai_raw = normalize_with_ai(openai_client, ai_input)
                                     ai_validated = validate_ai_output(ai_raw)
                                     chosen_result = ai_validated
@@ -653,7 +635,7 @@ def main() -> int:
                                 product_data=chosen_result,
                                 category_id=category_id,
                                 subcategory_id=subcategory_id,
-                                dry_run=args.dry_run,
+                                dry_run=dry_run,
                             )
                             normalized_product_id, product_action = _find_or_create_normalized_product(
                                 cur,
@@ -663,24 +645,24 @@ def main() -> int:
                                 normalization_version=normalization_version,
                                 preprocessed=preprocessed,
                                 family_id=family_id,
-                                dry_run=args.dry_run,
+                                dry_run=dry_run,
                             )
                             product_variant_id, variant_action = _find_or_create_product_variant(
                                 cur,
                                 normalized_product_id=normalized_product_id,
                                 variant_data=chosen_result,
                                 preprocessed=preprocessed,
-                                dry_run=args.dry_run,
+                                dry_run=dry_run,
                             )
                             snapshot_id, snapshot_action = _insert_offer_snapshot(
                                 cur,
                                 row,
                                 preprocessed,
                                 product_variant_id,
-                                dry_run=args.dry_run,
+                                dry_run=dry_run,
                             )
 
-                            if args.dry_run:
+                            if dry_run:
                                 logger.info(
                                     (
                                         "[DRY-RUN] id=%s ai_used=%s ai_succeeded=%s "
@@ -755,7 +737,7 @@ def main() -> int:
                             message = _truncate_error(str(exc))
                             logger.exception("Failed raw_offer id=%s", raw_offer_id)
 
-                            if args.dry_run:
+                            if dry_run:
                                 logger.error(
                                     "[DRY-RUN] id=%s would be marked failed: %s",
                                     raw_offer_id,
@@ -772,7 +754,7 @@ def main() -> int:
                                 total_skipped += 1
                                 logger.exception("Could not mark failed for id=%s", raw_offer_id)
 
-                    if args.dry_run:
+                    if dry_run:
                         offset += len(rows)
 
     except Exception:
@@ -786,6 +768,41 @@ def main() -> int:
     logger.info("total_failed=%d", total_failed)
     logger.info("total_skipped=%d", total_skipped)
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Process raw_offers with deterministic fallback normalization into "
+            "normalized_products, product_variants, and offer_snapshots."
+        )
+    )
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=50)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--use-ai", action="store_true")
+    parser.add_argument("--openai-api-key", default=os.getenv("OPENAI_API_KEY"))
+    parser.add_argument("--db-host", default=os.getenv("PGHOST", "localhost"))
+    parser.add_argument("--db-port", type=int, default=int(os.getenv("PGPORT", "5432")))
+    parser.add_argument("--db-name", default=os.getenv("PGDATABASE", "discount_tracker"))
+    parser.add_argument("--db-user", default=os.getenv("PGUSER", "postgres"))
+    parser.add_argument("--db-password", default=os.getenv("PGPASSWORD"))
+    args = parser.parse_args()
+
+    return run_normalization(
+        db_config=DBConfig(
+            host=args.db_host,
+            port=args.db_port,
+            dbname=args.db_name,
+            user=args.db_user,
+            password=args.db_password,
+        ),
+        limit=args.limit,
+        batch_size=args.batch_size,
+        dry_run=args.dry_run,
+        use_ai=args.use_ai,
+        openai_api_key=args.openai_api_key,
+    )
 
 
 if __name__ == "__main__":
