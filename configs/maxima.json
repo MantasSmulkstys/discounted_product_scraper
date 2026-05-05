@@ -46,6 +46,6 @@
     "discount": ["trim"],
     "condition": ["trim", "collapseWhitespace"],
     "unitPrice": ["trim"],
-    "validDates": ["trim", "stripPrefix"]
+    "validDates": ["trim"]
   }
 }

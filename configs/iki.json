@@ -13,8 +13,13 @@
     "name": ".akcija_title",
     "price": {
       "format": "split",
-      "integer": ".price_int",
-      "fraction": ".price_cents .sub"
+      "integer": ".price_block_wrapper > .price_int",
+      "fraction": ".price_block_wrapper > .price_cents > .sub"
+    },
+    "oldPrice": {
+      "format": "split",
+      "integer": ".price_old_block .price_int",
+      "fraction": ".price_old_block .price_cents"
     },
     "image": {
       "selector": ".akcija__image img",
@@ -26,10 +31,27 @@
     },
     "discount": {
       "format": "composed",
+      "requirePercent": true,
       "parts": [
         ".price_block_rounded_red_wrapper .minus",
         ".price_block_rounded_red_wrapper .main",
         ".price_block_rounded_red_wrapper .percentage"
+      ]
+    },
+    "condition": {
+      "format": "fallback",
+      "options": [
+        {
+          "selector": ".pigintuvas_wrapper",
+          "textSeparator": " "
+        },
+        {
+          "selector": ".nplusn_tag",
+          "textSeparator": " "
+        },
+        {
+          "selector": ".price_block_rounded_red_wrapper:not(:has(.percentage)) .main"
+        }
       ]
     }
   },
@@ -40,6 +62,7 @@
 
   "transforms": {
     "name": ["trim", "collapseWhitespace"],
-    "validDates": ["trim"]
+    "validDates": ["trim"],
+    "condition": ["trim", "collapseWhitespace", "normalizeLtPriceSuffix"]
   }
 }

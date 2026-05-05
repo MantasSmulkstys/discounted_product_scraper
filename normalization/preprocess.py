@@ -16,6 +16,17 @@ _MONTH_DAY_RANGE_RE = re.compile(
     r"(?P<m1>\d{1,2})[./\s](?P<d1>\d{1,2})\s*[-–—]\s*"
     r"(?P<m2>\d{1,2})[./\s](?P<d2>\d{1,2})"
 )
+_SINGLE_DATE_RE = re.compile(
+    r"^(?:(?P<y>\d{4})[-./\s])?(?P<m>\d{1,2})[-./\s](?P<d>\d{1,2})\.?$"
+)
+# Maps a Lithuanian validity prefix to which side of the range a single date
+# should be assigned to. "Iki" = end date, "Nuo" = start date, "Galioja" is
+# usually followed by a range so the single-date branch rarely fires here.
+_PREFIX_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"^Iki\s+", re.IGNORECASE), "to"),
+    (re.compile(r"^Nuo\s+", re.IGNORECASE), "from"),
+    (re.compile(r"^Galioja:?\s+", re.IGNORECASE), "unknown"),
+]
 _UNIT_TOKEN_RE = re.compile(r"\b(kg|g|ml|l|vnt\.?)\b", re.IGNORECASE)
 _SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", re.IGNORECASE)
 _PACKAGE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(vnt\.?)\b", re.IGNORECASE)
@@ -126,9 +137,14 @@ def parse_valid_dates(
     - 2026-04-20 - 2026-04-26
     - 04.20 - 04.26
     - 04/20 - 04/26
+    - Iki 05.11             (single end date — Maxima style)
+    - Nuo 05.11             (single start date)
+    - 2026-05-11            (single explicit date — defaults to valid_to)
 
     If year is missing, it is inferred from scraped_at. Year crossing is handled
-    for common New Year transitions (e.g. 12 29 - 01 05).
+    for common New Year transitions (e.g. 12 29 - 01 05). For single dates with
+    no year, if the inferred date is before scraped_at it is rolled to the next
+    year.
     """
     if not valid_dates:
         return (None, None)
@@ -136,6 +152,18 @@ def parse_valid_dates(
     text = _WS_RE.sub(" ", valid_dates.replace("\xa0", " ").strip())
     if not text:
         return (None, None)
+
+    # Detect a leading "Iki"/"Nuo"/"Galioja" prefix so a single date can be
+    # assigned to the correct side of the range. Default role is "to" — the
+    # only known store emitting prefix-less single dates would be one whose
+    # transforms strip the prefix, and that's almost always "Iki".
+    role = "to"
+    for pattern, prefix_role in _PREFIX_PATTERNS:
+        m = pattern.match(text)
+        if m:
+            role = prefix_role if prefix_role != "unknown" else role
+            text = text[m.end():].strip()
+            break
 
     match_with_year = _YEAR_RANGE_RE.search(text)
     if match_with_year:
@@ -156,41 +184,64 @@ def parse_valid_dates(
         return (start, end)
 
     ref_date = _coerce_date_ref(scraped_at)
-    if ref_date is None:
-        return (None, None)
 
-    match_no_year = _MONTH_DAY_RANGE_RE.search(text)
-    if not match_no_year:
-        return (None, None)
+    if ref_date is not None:
+        match_no_year = _MONTH_DAY_RANGE_RE.search(text)
+        if match_no_year:
+            m1 = int(match_no_year.group("m1"))
+            d1 = int(match_no_year.group("d1"))
+            m2 = int(match_no_year.group("m2"))
+            d2 = int(match_no_year.group("d2"))
 
-    m1 = int(match_no_year.group("m1"))
-    d1 = int(match_no_year.group("d1"))
-    m2 = int(match_no_year.group("m2"))
-    d2 = int(match_no_year.group("d2"))
-
-    start_year = ref_date.year
-    end_year = ref_date.year
-
-    year_crossing_applied = False
-    if m1 > m2:
-        year_crossing_applied = True
-        if ref_date.month <= 2 and m1 >= 11 and m2 <= 2:
-            start_year = ref_date.year - 1
-            end_year = ref_date.year
-        elif ref_date.month >= 11 and m1 >= 11 and m2 <= 2:
             start_year = ref_date.year
-            end_year = ref_date.year + 1
-        else:
-            end_year = ref_date.year + 1
+            end_year = ref_date.year
 
-    start = _build_date(start_year, m1, d1)
-    end = _build_date(end_year, m2, d2)
-    if start is None or end is None:
+            year_crossing_applied = False
+            if m1 > m2:
+                year_crossing_applied = True
+                if ref_date.month <= 2 and m1 >= 11 and m2 <= 2:
+                    start_year = ref_date.year - 1
+                    end_year = ref_date.year
+                elif ref_date.month >= 11 and m1 >= 11 and m2 <= 2:
+                    start_year = ref_date.year
+                    end_year = ref_date.year + 1
+                else:
+                    end_year = ref_date.year + 1
+
+            start = _build_date(start_year, m1, d1)
+            end = _build_date(end_year, m2, d2)
+            if start is None or end is None:
+                return (None, None)
+            if start > end:
+                if not year_crossing_applied or start.year == end.year:
+                    return (None, None)
+            return (start, end)
+
+    single = _SINGLE_DATE_RE.fullmatch(text)
+    if not single:
         return (None, None)
-    if start > end:
-        if not year_crossing_applied or start.year == end.year:
+
+    if single.group("y"):
+        parsed = _build_date(
+            int(single.group("y")),
+            int(single.group("m")),
+            int(single.group("d")),
+        )
+    else:
+        if ref_date is None:
             return (None, None)
-    return (start, end)
+        m_val = int(single.group("m"))
+        d_val = int(single.group("d"))
+        parsed = _build_date(ref_date.year, m_val, d_val)
+        if parsed is not None and parsed < ref_date:
+            parsed = _build_date(ref_date.year + 1, m_val, d_val)
+
+    if parsed is None:
+        return (None, None)
+
+    if role == "from":
+        return (parsed, None)
+    return (None, parsed)
 
 
 def parse_unit_price(unit_price: str | None) -> tuple[Decimal | None, str | None]:

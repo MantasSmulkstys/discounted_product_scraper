@@ -22,5 +22,8 @@ data/tmp/
 logs/
 *.log
 
+# Debug dumps from debug_store.py
+debug_*.json
+
 # Jupyter
 .ipynb_checkpoints/

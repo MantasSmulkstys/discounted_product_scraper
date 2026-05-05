@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
@@ -19,6 +20,15 @@ class DBConfig:
     dbname: str = "discount_tracker"
     user: str = "postgres"
     password: str | None = None
+
+
+def make_slug(name: str) -> str:
+    text = name.strip().lower()
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = text.strip("-")
+    return text or "unknown"
 
 
 def _normalize_text(value: str | None) -> str:
@@ -100,36 +110,83 @@ def _fit_varchar(value: str | None, field_name: str, max_length: int = 255) -> s
 
 
 def _ensure_store_ids(cur, store_configs: list[StoreConfig]) -> dict[str, int]:
-    store_names = sorted({config.store for config in store_configs})
-    cur.execute("SELECT id, name FROM stores WHERE name = ANY(%s)", (store_names,))
-    store_map = {name: store_id for store_id, name in cur.fetchall()}
+    """Resolve config store identifiers to DB ids, looking up by slug.
 
+    Slug is the stable machine identifier (matches the scraper's config
+    `store` field). The DB `name` column is lowercase too — the UI capitalises
+    via Str::title() — but slug is the key we route on.
+    """
+    slugs = sorted({make_slug(config.store) for config in store_configs})
+    cur.execute("SELECT id, slug FROM stores WHERE slug = ANY(%s)", (slugs,))
+    by_slug = {slug: store_id for store_id, slug in cur.fetchall()}
+
+    store_map: dict[str, int] = {}
     for store_config in store_configs:
-        if store_config.store in store_map:
+        slug = make_slug(store_config.store)
+        if slug in by_slug:
+            store_map[store_config.store] = by_slug[slug]
             continue
 
         cur.execute(
             """
-            INSERT INTO stores (name)
-            VALUES (%s)
+            INSERT INTO stores (name, slug, created_at, updated_at)
+            VALUES (%s, %s, NOW(), NOW())
+            ON CONFLICT (slug) DO UPDATE SET updated_at = NOW()
             RETURNING id
             """,
-            (_store_display_name(store_config),),
+            (store_config.store, slug),
         )
         store_map[store_config.store] = cur.fetchone()[0]
 
     return store_map
 
 
-def create_scrape_batch(cur, source_name: str | None = None, notes: str | None = None) -> int:
-    cur.execute(
-        """
-        INSERT INTO scrape_batches (source_name, notes, started_at)
-        VALUES (%s, %s, NOW())
-        RETURNING id
-        """,
-        (source_name, notes),
-    )
+def _current_week_starting():
+    """Monday of the current ISO week — the natural batch boundary for weekly
+    scraping. Re-running the scraper on Wednesday should reuse Monday's batch
+    rather than create a second one for the same promo cycle."""
+    from datetime import date, timedelta
+
+    today = date.today()
+    return today - timedelta(days=today.weekday())
+
+
+def create_scrape_batch(
+    cur,
+    store_id: int | None = None,
+    source_name: str | None = None,
+    notes: str | None = None,
+) -> int:
+    """Idempotent per (store_id, week_starting): re-running for the same week
+    returns the existing batch's id rather than creating a duplicate."""
+    week_starting = _current_week_starting()
+
+    if store_id is not None:
+        cur.execute(
+            """
+            INSERT INTO scrape_batches (store_id, source_name, notes, week_starting, started_at)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (store_id, week_starting) DO UPDATE SET
+                source_name = EXCLUDED.source_name,
+                notes = COALESCE(EXCLUDED.notes, scrape_batches.notes),
+                started_at = NOW(),
+                status = 'running',
+                finished_at = NULL,
+                updated_at = NOW()
+            RETURNING id
+            """,
+            (store_id, source_name, notes, week_starting),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO scrape_batches (source_name, notes, week_starting, started_at)
+            VALUES (%s, %s, %s, NOW())
+            RETURNING id
+            """,
+            (source_name, notes, week_starting),
+        )
+
     row = cur.fetchone()
     if not row:
         raise RuntimeError("Failed to create scrape_batches row")
@@ -140,7 +197,9 @@ def finish_scrape_batch(cur, batch_id: int) -> None:
     cur.execute(
         """
         UPDATE scrape_batches
-        SET finished_at = NOW()
+        SET finished_at = NOW(),
+            status = 'completed',
+            updated_at = NOW()
         WHERE id = %s
         """,
         (batch_id,),
@@ -154,12 +213,20 @@ def save_raw_offers(
     source_name: str | None = None,
     notes: str | None = None,
 ) -> int:
+    """Persist scraped products into raw_offers, one batch per store per week.
+
+    The (store_id, week_starting) unique constraint on scrape_batches makes
+    re-running the scraper for the same week reuse the existing batch — useful
+    when a partial scrape needs to be retried mid-week.
+    """
     try:
-        import psycopg
+        import psycopg  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
             "Database output requires psycopg. Install it with: pip install psycopg[binary]"
         ) from exc
+
+    import psycopg
 
     config_map = {store_config.store: store_config for store_config in store_configs}
 
@@ -172,24 +239,35 @@ def save_raw_offers(
     ) as conn:
         with conn.cursor() as cur:
             store_map = _ensure_store_ids(cur, store_configs)
-            batch_id = create_scrape_batch(cur, source_name=source_name, notes=notes)
             conn.commit()
 
-            rows = []
-            skipped = 0
+            # Group products by store so each store gets its own batch.
+            products_by_store: dict[str, list[Product]] = {}
             for product in products:
-                store_config = config_map[product.store]
-                external_id = build_external_id(product)
-                offer_url = _fit_varchar(_build_offer_url(product, store_config), "url")
-                if offer_url is None:
-                    logger.warning("[%s] Skipping product without storable url: %s", product.store, product.name)
-                    skipped += 1
-                    continue
+                products_by_store.setdefault(product.store, []).append(product)
 
-                rows.append(
-                    {
-                        "external_id": external_id,
-                        "store_id": store_map[product.store],
+            total_inserted = 0
+            for store_name, store_products in products_by_store.items():
+                store_id = store_map[store_name]
+                store_config = config_map[store_name]
+                batch_id = create_scrape_batch(
+                    cur, store_id=store_id, source_name=source_name, notes=notes,
+                )
+                conn.commit()
+
+                rows = []
+                skipped = 0
+                for product in store_products:
+                    content_hash = build_external_id(product)
+                    offer_url = _fit_varchar(_build_offer_url(product, store_config), "url")
+                    if offer_url is None:
+                        logger.warning("[%s] Skipping product without storable url: %s", product.store, product.name)
+                        skipped += 1
+                        continue
+
+                    rows.append({
+                        "content_hash": content_hash,
+                        "store_id": store_id,
                         "name": product.name,
                         "price": product.price,
                         "old_price": product.old_price,
@@ -202,67 +280,43 @@ def save_raw_offers(
                         "loyalty_card": product.loyalty_card,
                         "scraped_at": _parse_scraped_at(product.scraped_at),
                         "scrape_batch_id": batch_id,
-                    }
-                )
+                    })
 
-            if rows:
-                cur.executemany(
-                    """
-                    INSERT INTO raw_offers (
-                        external_id,
-                        store_id,
-                        name,
-                        price,
-                        old_price,
-                        discount,
-                        condition,
-                        unit_price,
-                        image,
-                        url,
-                        valid_dates,
-                        loyalty_card,
-                        scraped_at,
-                        scrape_batch_id
+                if rows:
+                    cur.executemany(
+                        """
+                        INSERT INTO raw_offers (
+                            content_hash, store_id, name, price, old_price, discount,
+                            condition, unit_price, image, url, valid_dates,
+                            loyalty_card, scraped_at, scrape_batch_id
+                        )
+                        VALUES (
+                            %(content_hash)s, %(store_id)s, %(name)s, %(price)s,
+                            %(old_price)s, %(discount)s, %(condition)s, %(unit_price)s,
+                            %(image)s, %(url)s, %(valid_dates)s, %(loyalty_card)s,
+                            %(scraped_at)s, %(scrape_batch_id)s
+                        )
+                        ON CONFLICT (scrape_batch_id, content_hash) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            price = EXCLUDED.price,
+                            old_price = EXCLUDED.old_price,
+                            discount = EXCLUDED.discount,
+                            condition = EXCLUDED.condition,
+                            unit_price = EXCLUDED.unit_price,
+                            image = EXCLUDED.image,
+                            valid_dates = EXCLUDED.valid_dates,
+                            loyalty_card = EXCLUDED.loyalty_card,
+                            scraped_at = EXCLUDED.scraped_at,
+                            updated_at = NOW()
+                        """,
+                        rows,
                     )
-                    VALUES (
-                        %(external_id)s,
-                        %(store_id)s,
-                        %(name)s,
-                        %(price)s,
-                        %(old_price)s,
-                        %(discount)s,
-                        %(condition)s,
-                        %(unit_price)s,
-                        %(image)s,
-                        %(url)s,
-                        %(valid_dates)s,
-                        %(loyalty_card)s,
-                        %(scraped_at)s,
-                        %(scrape_batch_id)s
-                    )
-                    ON CONFLICT (scrape_batch_id, external_id)
-                    DO UPDATE SET
-                        store_id = EXCLUDED.store_id,
-                        name = EXCLUDED.name,
-                        price = EXCLUDED.price,
-                        old_price = EXCLUDED.old_price,
-                        discount = EXCLUDED.discount,
-                        condition = EXCLUDED.condition,
-                        unit_price = EXCLUDED.unit_price,
-                        image = EXCLUDED.image,
-                        valid_dates = EXCLUDED.valid_dates,
-                        loyalty_card = EXCLUDED.loyalty_card,
-                        scraped_at = EXCLUDED.scraped_at,
-                        scrape_batch_id = EXCLUDED.scrape_batch_id,
-                        updated_at = NOW()
-                    """,
-                    rows,
-                )
 
-            if skipped:
-                logger.info("Skipped %d products that could not fit the DB schema", skipped)
+                if skipped:
+                    logger.info("[%s] Skipped %d products that could not fit the DB schema", store_name, skipped)
 
-            finish_scrape_batch(cur, batch_id)
-        conn.commit()
+                finish_scrape_batch(cur, batch_id)
+                conn.commit()
+                total_inserted += len(rows)
 
-    return len(rows)
+    return total_inserted

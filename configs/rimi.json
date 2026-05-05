@@ -9,21 +9,31 @@
     "startPage": 1,
     "pageSize": 40,
     "pageSizeParam": "pageSize",
-    "maxPages": 2
+    "maxPages": 5
   },
 
   "selectors": {
     "name": ".card__name",
     "price": {
-      "format": "attribute",
-      "selector": ".price-tag.card__price",
-      "attribute": "aria-label",
-      "regex": "([\\d.,]+)\\s*€"
+      "format": "fallback",
+      "options": [
+        {
+          "format": "split",
+          "integer": ".price-label__price .major",
+          "fraction": ".price-label__price .minor .cents"
+        },
+        {
+          "format": "single",
+          "selector": ".card__price-wrapper.-has-discount .price-tag.card__price .sr-only"
+        }
+      ]
     },
     "oldPrice": {
-      "selector": ".old-price-tag.card__old-price",
-      "attribute": "aria-label",
-      "regex": "([\\d.,]+)\\s*€"
+      "format": "fallback",
+      "options": [
+        ".old-price-tag.card__old-price .sr-only",
+        ".card__price-wrapper:not(.-has-discount) .price-tag.card__price .sr-only"
+      ]
     },
     "unitPrice": ".card__price-per",
     "image": {

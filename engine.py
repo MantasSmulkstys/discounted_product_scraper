@@ -93,6 +93,16 @@ def resolve_price(card: Tag, price_def: dict | str) -> float | None:
 
     fmt = price_def.get("format", "single")
 
+    if fmt == "fallback":
+        # Try each option in order; first non-None price wins. Useful when a
+        # store renders different markup for different promo types (e.g. Rimi
+        # has both ".price-label__price" cards and "-has-discount" cards).
+        for option in price_def.get("options", []):
+            result = resolve_price(card, option)
+            if result is not None:
+                return result
+        return None
+
     if fmt == "single":
         el = card.select_one(price_def["selector"])
         if not el:
@@ -104,7 +114,14 @@ def resolve_price(card: Tag, price_def: dict | str) -> float | None:
         frac_el = card.select_one(price_def["fraction"])
         if not int_el:
             return None
-        integer = re.sub(r"[^\d]", "", int_el.get_text().strip())
+        int_text = int_el.get_text().strip()
+        # Defend against markup that reuses the "integer" slot to show a
+        # discount label instead of a real price (e.g. IKI's card block
+        # can render either "0" + ".99" for €0.99 or "-20%" when the only
+        # thing displayed is the loyalty card discount percentage).
+        if "%" in int_text:
+            return None
+        integer = re.sub(r"[^\d]", "", int_text)
         fraction = re.sub(r"[^\d]", "", frac_el.get_text().strip()) if frac_el else "00"
         if not integer:
             return None
@@ -155,6 +172,12 @@ def resolve_discount(card: Tag, discount_def: dict | str | None) -> str | None:
         result = "".join(parts)
         if not result or not any(c.isdigit() for c in result):
             return None
+        # Opt-in safety net for feeds where the same promo box can render
+        # either a percent ("-40%") or an absolute final price ("0,99 €") —
+        # setting requirePercent avoids silently writing an absolute amount
+        # into the discount column as if it were a percent.
+        if discount_def.get("requirePercent") and "%" not in result:
+            return None
         if not result.startswith("-"):
             result = f"-{result}"
         if not result.endswith("%"):
@@ -173,6 +196,17 @@ def read_field(card: Tag, selector_def: dict | str | None, base_url: str = "") -
         el = card.select_one(selector_def)
         return el.get_text(strip=True) if el else None
 
+    # Fallback format: try each option in order, return the first non-empty
+    # result. Useful when a field (e.g. `condition`) can be represented by
+    # one of several distinct DOM shapes, like IKI's pigintuvas coupon vs.
+    # its "1+1" / "2+1" nplusn badge.
+    if selector_def.get("format") == "fallback":
+        for option in selector_def.get("options", []):
+            result = read_field(card, option, base_url)
+            if result:
+                return result
+        return None
+
     selector = selector_def.get("selector", "")
     el = card.select_one(selector)
     if not el:
@@ -182,7 +216,15 @@ def read_field(card: Tag, selector_def: dict | str | None, base_url: str = "") -
     if attr:
         raw = el.get(attr, "")
     else:
-        raw = el.get_text(strip=True)
+        # When `textSeparator` is provided, inline text nodes inside the
+        # selected element are joined with it instead of being glued
+        # together. Useful for promo wrappers where the label and the price
+        # value sit in sibling spans (e.g. IKI's ".pigintuvas_wrapper").
+        text_separator = selector_def.get("textSeparator")
+        if text_separator is not None:
+            raw = el.get_text(text_separator, strip=True)
+        else:
+            raw = el.get_text(strip=True)
 
     if not raw:
         return None
@@ -321,8 +363,16 @@ class BaseScraper:
             return None
 
         price = resolve_price(card, sel.get("price", {}))
-        old_price_raw = read_field(card, sel.get("oldPrice"), base_url)
-        old_price = parse_price_string(old_price_raw)
+        old_price_def = sel.get("oldPrice")
+        # When oldPrice uses a structured price spec (e.g. split integer /
+        # fraction selectors), route it through resolve_price so it can pull
+        # from two elements the same way the main price does. Plain string /
+        # attribute-style configs keep the original read_field path.
+        if isinstance(old_price_def, dict) and old_price_def.get("format"):
+            old_price = resolve_price(card, old_price_def)
+        else:
+            old_price_raw = read_field(card, old_price_def, base_url)
+            old_price = parse_price_string(old_price_raw)
         discount = resolve_discount(card, sel.get("discount"))
         condition = read_field(card, sel.get("condition"), base_url)
         unit_price = read_field(card, sel.get("unitPrice"), base_url)
