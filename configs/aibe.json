@@ -1,30 +1,33 @@
 {
-  "store": "aibe",
-  "url": "https://aibe.lt/akcijos/",
-  "type": "static",
-  "container": ".bestOffers-block",
-
-  "selectors": {
-    "name": ".bestOffers-block-discountProduct-name",
-    "price": {
-      "format": "split",
-      "integer": ".discount-price-now-euro",
-      "fraction": ".discount-price-now-cent"
+    "store": "aibe",
+    "url": "https://aibe.lt/akcijos/",
+    "type": "static",
+    "container": ".bestOffers-block",
+    "selectors": {
+        "name": ".bestOffers-block-discountProduct-name",
+        "price": {
+            "format": "split",
+            "integer": ".discount-price-now-euro",
+            "fraction": ".discount-price-now-cent"
+        },
+        "oldPrice": ".discount-without-card-price",
+        "unitPrice": ".price_quantity-text",
+        "image": {
+            "selector": ".bestOffers-block-discountProduct-imgWrapper img",
+            "attribute": "data-src"
+        }
     },
-    "oldPrice": ".discount-without-card-price",
-    "unitPrice": ".price_quantity-text",
-    "image": {
-      "selector": ".bestOffers-block-discountProduct-imgWrapper img",
-      "attribute": "data-src"
+    "loyaltyCard": {
+        "indicator": ".bestOffers-block-discountCard"
+    },
+    "transforms": {
+        "name": [
+            "trim",
+            "collapseWhitespace"
+        ],
+        "oldPrice": [
+            "stripCurrency",
+            "commaToDecimal"
+        ]
     }
-  },
-
-  "loyaltyCard": {
-    "indicator": ".bestOffers-block-discountCard"
-  },
-
-  "transforms": {
-    "name": ["trim", "collapseWhitespace"],
-    "oldPrice": ["stripCurrency", "commaToDecimal"]
-  }
 }

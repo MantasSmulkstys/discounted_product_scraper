@@ -43,6 +43,7 @@ class TestValidateAiOutput:
             "normalized_name": "pienas rokiskio",
             "brand": "Rokiškio",
             "generic_name": "pienas",
+            "family_key": "pienas",
             "category_name": "ŠVIEŽI MAISTO PRODUKTAI",
             "subcategory_name": "PIENO PRODUKTAI",
             "variant_name": "1 l",
@@ -112,6 +113,25 @@ class TestValidateAiOutput:
         result = validate_ai_output(payload)
         assert result["size_unit"] == unit
 
+    def test_normalizes_family_key(self) -> None:
+        payload = self._valid_payload()
+        payload["family_key"] = "Raudonosios Vynuogės "
+        result = validate_ai_output(payload)
+        assert result["family_key"] == "raudonosios vynuoges"
+
+    def test_accepts_payload_without_family_key(self) -> None:
+        # Forward-compat: older AI payloads predate family_key. Shouldn't raise.
+        payload = self._valid_payload()
+        del payload["family_key"]
+        result = validate_ai_output(payload)
+        assert result["family_key"] is None
+
+    def test_collapses_blank_family_key_to_none(self) -> None:
+        payload = self._valid_payload()
+        payload["family_key"] = "   "
+        result = validate_ai_output(payload)
+        assert result["family_key"] is None
+
 
 class TestResolveCategoryIds:
     ALLOWED = [
@@ -169,6 +189,7 @@ class TestBuildFallbackAiResult:
         assert result["needs_review"] is True
         assert result["confidence"] is None
         assert result["variant_name"] == "1 l"
+        assert result["family_key"] is None
 
     def test_handles_empty_clean_name(self) -> None:
         result = build_fallback_ai_result({

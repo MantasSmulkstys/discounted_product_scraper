@@ -153,6 +153,7 @@ def normalize_with_ai(client, ai_input: dict[str, Any]) -> dict[str, Any]:
             "normalized_name": {"type": "string"},
             "brand": {"type": ["string", "null"]},
             "generic_name": {"type": ["string", "null"]},
+            "family_key": {"type": ["string", "null"]},
             "category_name": {"type": ["string", "null"]},
             "subcategory_name": {"type": ["string", "null"]},
             "variant_name": {"type": ["string", "null"]},
@@ -176,6 +177,7 @@ def normalize_with_ai(client, ai_input: dict[str, Any]) -> dict[str, Any]:
             "normalized_name",
             "brand",
             "generic_name",
+            "family_key",
             "category_name",
             "subcategory_name",
             "variant_name",
@@ -204,7 +206,27 @@ def normalize_with_ai(client, ai_input: dict[str, Any]) -> dict[str, Any]:
         "Remove retail/noise fragments when possible if not essential (for example I r., II r., a. r.), but do not remove meaningful food identity words. "
         "Put size/count/volume into variant_name, size_value/size_unit, package_count/package_unit, and net_quantity_value/net_quantity_unit. "
         "generic_name should be the plain generic product type. "
-        "variant_name should be compact quantity like '1 kg', '10 vnt.', '900 ml', or null."
+        "variant_name should be compact quantity like '1 kg', '10 vnt.', '900 ml', or null. "
+        "FAMILY_KEY RULE — this is the cross-store match key. It groups the SAME ITEM sold under slightly different names "
+        "in different stores. Output 1-3 lowercase Lithuanian words, no diacritics, no numerical attributes (no percentages, "
+        "no weights), no brand, no packaging adjectives, no declension variants — always use the nominative plural form. "
+        "Identity-defining attributes that distinguish the product MUST stay in family_key. Cosmetic/declension/measurement "
+        "differences MUST be stripped so two listings of the same item land on the same family_key. "
+        "Examples (input clean_name → family_key):\n"
+        "  'Raudonosios besėklės vynuogės' → 'raudonos vynuoges'\n"
+        "  'Raudonos besėklės vynuogės' → 'raudonos vynuoges'\n"
+        "  'Šviežios raudonos vynuogės' → 'raudonos vynuoges'\n"
+        "  'Baltos vynuogės' → 'baltos vynuoges'\n"
+        "  'Pienas Rokiškio 2,5% 1 l' → 'pienas'\n"
+        "  'Pienas be laktozės 2,5%' → 'pienas be laktozes'\n"
+        "  'Sviestas 82% riebumo' → 'sviestas'\n"
+        "  'Sviestas 90% riebumo Dvaro' → 'sviestas'\n"
+        "  'Raudonas vynas Cabernet' → 'raudonas vynas'\n"
+        "  'Baltas vynas Chardonnay' → 'baltas vynas'\n"
+        "  'Avietės šviežios 250 g' → 'avietes'\n"
+        "  'Šaldytos avietės 400 g' → 'saldytos avietes'\n"
+        "Notice: lactose status splits, fat % does not. Color splits for wine and grapes (because color signals variety). "
+        "Frozen vs fresh splits. Brand and packaging never appear in family_key."
     )
 
     response = client.responses.create(
@@ -259,16 +281,27 @@ def validate_ai_output(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Missing keys in AI output: {missing}")
 
     cleaned: dict[str, Any] = dict(data)
+    # `family_key` was added later — older payloads may not include it. The
+    # downstream resolver falls back to generic_name when family_key is None.
+    if "family_key" not in cleaned:
+        cleaned["family_key"] = None
     for key in [
         "canonical_name",
         "normalized_name",
         "brand",
         "generic_name",
+        "family_key",
         "category_name",
         "subcategory_name",
         "variant_name",
     ]:
         cleaned[key] = _null_if_empty(cleaned.get(key))
+
+    family_key = cleaned.get("family_key")
+    if isinstance(family_key, str):
+        cleaned["family_key"] = normalize_identity_text(family_key)
+        if not cleaned["family_key"]:
+            cleaned["family_key"] = None
 
     if not cleaned.get("canonical_name"):
         raise ValueError("AI output canonical_name is empty")
@@ -341,6 +374,7 @@ def build_fallback_ai_result(preprocessed: dict[str, Any]) -> dict[str, Any]:
         "normalized_name": normalize_identity_text(clean_name),
         "brand": None,
         "generic_name": None,
+        "family_key": None,
         "category_name": None,
         "subcategory_name": None,
         "variant_name": _build_variant_name_from_preprocessed(preprocessed),

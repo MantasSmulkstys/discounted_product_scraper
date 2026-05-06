@@ -202,16 +202,30 @@ def _get_openai_client(api_key: str | None):
     return OpenAI(api_key=api_key)
 
 
-def canonicalize_family_name(generic_name: str | None, canonical_name: str | None) -> str | None:
-    source = generic_name if generic_name and generic_name.strip() else canonical_name
+def canonicalize_family_name(
+    generic_name: str | None,
+    canonical_name: str | None,
+    family_key: str | None = None,
+) -> str | None:
+    """Resolve the human-friendly family display name.
+
+    Priority order: AI-provided `family_key` (the explicit cross-store match
+    field — strict, deterministic, language-normalized) → `generic_name`
+    (older AI output style, broader phrasing) → `canonical_name` (last-resort
+    fallback when both are missing). Identity (i.e. which products land in
+    the SAME family row) is driven by `normalize_identity_text` of whatever
+    value we picked, so as long as `family_key` is consistent across stores
+    they'll dedupe.
+    """
+    source = None
+    for candidate in (family_key, generic_name, canonical_name):
+        if candidate and str(candidate).strip():
+            source = str(candidate).strip()
+            break
     if source is None:
         return None
 
-    source_value = source.strip()
-    if not source_value:
-        return None
-
-    normalized_source = normalize_identity_text(source_value)
+    normalized_source = normalize_identity_text(source)
     canonical_map = {
         normalize_identity_text("katės ėdalas"): "Kačių ėdalas",
         normalize_identity_text("kačių ėdalas"): "Kačių ėdalas",
@@ -227,9 +241,9 @@ def canonicalize_family_name(generic_name: str | None, canonical_name: str | Non
     if mapped_value:
         return mapped_value
 
-    if source_value[0].islower():
-        return source_value[0].upper() + source_value[1:]
-    return source_value
+    if source[0].islower():
+        return source[0].upper() + source[1:]
+    return source
 
 
 def _find_or_create_product_family(
@@ -242,6 +256,7 @@ def _find_or_create_product_family(
     family_name = canonicalize_family_name(
         product_data.get("generic_name"),
         product_data.get("canonical_name"),
+        product_data.get("family_key"),
     )
     normalized_family_name = normalize_identity_text(str(family_name or ""))
     if not normalized_family_name:
