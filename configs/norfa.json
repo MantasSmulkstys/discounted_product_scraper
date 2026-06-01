@@ -19,6 +19,7 @@
     },
     "validDates": {
       "selector": ".c-more-info__content",
+      "textSeparator": " ",
       "regex": "Galioja\\s*(.+?)\\s*d\\."
     }
   },

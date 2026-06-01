@@ -19,9 +19,6 @@ _MONTH_DAY_RANGE_RE = re.compile(
 _SINGLE_DATE_RE = re.compile(
     r"^(?:(?P<y>\d{4})[-./\s])?(?P<m>\d{1,2})[-./\s](?P<d>\d{1,2})\.?$"
 )
-# Maps a Lithuanian validity prefix to which side of the range a single date
-# should be assigned to. "Iki" = end date, "Nuo" = start date, "Galioja" is
-# usually followed by a range so the single-date branch rarely fires here.
 _PREFIX_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^Iki\s+", re.IGNORECASE), "to"),
     (re.compile(r"^Nuo\s+", re.IGNORECASE), "from"),
@@ -125,6 +122,45 @@ def clean_product_name(name: str) -> str:
     return normalized.strip()
 
 
+# Descriptor tokens stripped from the display name. Quantity detection runs on
+# the conservatively-cleaned name BEFORE this, so removing sizes here is safe.
+_DESCRIPTOR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # size / weight / volume / count, e.g. "1 kg", "350 g", "900 ml", "10 vnt."
+    # The trailing lookahead means the unit must be its own token, so a word
+    # like "gabaliukai" or "litras" is never clipped.
+    re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|cl|l|vnt)\.?(?=\s|,|;|$)", re.IGNORECASE),
+    # article/SKU codes, e.g. "art. 20240419"
+    re.compile(r"\bart\.?\s*\d+", re.IGNORECASE),
+    # retail grade, e.g. "a. r.", "I r.", "II r."
+    re.compile(r"\b(?:[ivx]+|a)\.?\s*r\.", re.IGNORECASE),
+    # quality class, e.g. "1 kl.", "2 kl."
+    re.compile(r"\b\d+\s*kl\.", re.IGNORECASE),
+)
+
+
+def strip_descriptors(name: str) -> str:
+    """Deterministic display name: drop quantities and retail noise, keep the
+    actual product words (incl. Lithuanian diacritics, fat %, flavor, brand).
+
+    Examples:
+        "KREKENAVOS virtos dešrelės, a. r., 1 kg" -> "KREKENAVOS virtos dešrelės"
+        "Pomidorai ROMANTICA RIMI 1 kl., 400 g"   -> "Pomidorai ROMANTICA RIMI"
+        "Šaltkrepšis su kietu įdėklu, art. 20240419, 1 vnt." -> "Šaltkrepšis su kietu įdėklu"
+    """
+    if not name:
+        return ""
+
+    text = name
+    for pattern in _DESCRIPTOR_PATTERNS:
+        text = pattern.sub(" ", text)
+
+    # Tidy separators left behind by the removals.
+    text = re.sub(r"\s+([,;])", r"\1", text)        # " ," -> ","
+    text = re.sub(r"([,;])\s*(?=[,;])", "", text)   # collapse runs of commas
+    text = _WS_RE.sub(" ", text)
+    return text.strip(" ,;-–—")
+
+
 def parse_valid_dates(
     valid_dates: str | None,
     scraped_at: Any,
@@ -153,10 +189,6 @@ def parse_valid_dates(
     if not text:
         return (None, None)
 
-    # Detect a leading "Iki"/"Nuo"/"Galioja" prefix so a single date can be
-    # assigned to the correct side of the range. Default role is "to" — the
-    # only known store emitting prefix-less single dates would be one whose
-    # transforms strip the prefix, and that's almost always "Iki".
     role = "to"
     for pattern, prefix_role in _PREFIX_PATTERNS:
         m = pattern.match(text)
@@ -338,7 +370,10 @@ def preprocess_raw_offer(raw_offer: dict[str, Any]) -> dict[str, Any]:
     This function is side-effect free: no AI calls and no database writes.
     """
     raw_name = raw_offer.get("name") or ""
-    clean_name = clean_product_name(str(raw_name))
+    # Conservatively-cleaned name still contains sizes, so quantity detection
+    # works; `clean_name` is the stripped display name derived from it.
+    conservative_name = clean_product_name(str(raw_name))
+    clean_name = strip_descriptors(conservative_name)
 
     valid_dates_raw = raw_offer.get("valid_dates")
     valid_from, valid_to = parse_valid_dates(valid_dates_raw, raw_offer.get("scraped_at"))
@@ -346,7 +381,7 @@ def preprocess_raw_offer(raw_offer: dict[str, Any]) -> dict[str, Any]:
     unit_price_raw = raw_offer.get("unit_price")
     unit_price_value, unit_price_unit = parse_unit_price(unit_price_raw)
 
-    quantity = detect_quantity_from_name(clean_name)
+    quantity = detect_quantity_from_name(conservative_name)
 
     return {
         "raw_offer_id": raw_offer.get("id"),

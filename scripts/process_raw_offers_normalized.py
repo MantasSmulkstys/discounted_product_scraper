@@ -12,7 +12,7 @@ from typing import Any
 try:
     import psycopg
 except ImportError:
-    psycopg = None  # The lazy import inside _connect() will surface a friendly error.
+    psycopg = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +81,9 @@ def _fetch_candidates(cur, batch_size: int, offset: int = 0) -> list[dict[str, A
             raw_offers.loyalty_card,
             raw_offers.scraped_at,
             raw_offers.normalization_status,
-            raw_offers.content_hash
+            raw_offers.content_hash,
+            raw_offers.store_product_key,
+            raw_offers.key_source
         FROM raw_offers
         LEFT JOIN stores ON stores.id = raw_offers.store_id
         LEFT JOIN scrape_batches ON scrape_batches.id = raw_offers.scrape_batch_id
@@ -132,6 +134,44 @@ def _lookup_existing_normalization(
         LIMIT 1
         """,
         (store_id, content_hash, raw_offer_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return int(row[0]), int(row[1])
+
+
+def _lookup_by_store_product_key(
+    cur,
+    store_id: int | None,
+    store_product_key: str | None,
+    raw_offer_id: int,
+) -> tuple[int, int] | None:
+    """Primary dedup shortcut, ahead of the content_hash one.
+
+    `store_product_key` survives the volatility that breaks `content_hash`:
+    the AI rewriting names, scrape whitespace drift, comma↔period swaps in
+    unit_price. Same physical product across weeks gets the same key, so the
+    first `(normalized_product_id, product_variant_id)` we ever resolved for
+    it is reused without another AI call — preventing intra-store duplicates.
+    """
+    if not store_product_key or store_id is None:
+        return None
+
+    cur.execute(
+        """
+        SELECT pv.normalized_product_id, pv.id
+        FROM raw_offers ro
+        JOIN offer_snapshots os ON os.raw_offer_id = ro.id
+        JOIN product_variants pv ON pv.id = os.product_variant_id
+        WHERE ro.store_id = %s
+          AND ro.store_product_key = %s
+          AND ro.id <> %s
+          AND ro.normalization_status = 'done'
+        ORDER BY ro.normalized_at DESC NULLS LAST, ro.id DESC
+        LIMIT 1
+        """,
+        (store_id, store_product_key, raw_offer_id),
     )
     row = cur.fetchone()
     if row is None:
@@ -335,9 +375,6 @@ def _find_or_create_normalized_product(
         row = cur.fetchone()
         return (int(row[0]), "reused") if row else (None, "would_insert")
 
-    # ON CONFLICT (identity_key) gives us a single-shot upsert: insert if new,
-    # update-noop and return the existing id otherwise. Replaces the prior
-    # SELECT + savepoint + retry dance.
     cur.execute(
         """
         INSERT INTO normalized_products (
@@ -347,7 +384,9 @@ def _find_or_create_normalized_product(
             source_name, image_url, created_at, updated_at
         )
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-        ON CONFLICT (identity_key) DO UPDATE SET updated_at = NOW()
+        ON CONFLICT (identity_key) DO UPDATE SET
+            image_url = COALESCE(EXCLUDED.image_url, normalized_products.image_url),
+            updated_at = NOW()
         RETURNING id, (xmax = 0) AS inserted
         """,
         (
@@ -485,9 +524,6 @@ def _insert_offer_snapshot(
     old_price = preprocessed.get("old_price")
     condition = preprocessed.get("condition")
 
-    # Show priceless promos too (e.g. "1+1", "Galioja su pigintuvu") as long
-    # as they carry SOME signal — a price, a discount, or a condition. Pure
-    # blanks would be junk so we still drop them.
     if price is None and discount_percent is None and not condition:
         return (None, "skipped_empty", None)
 
@@ -516,11 +552,6 @@ def _insert_offer_snapshot(
     if dry_run:
         return (None, "would_insert", payload)
 
-    # ON CONFLICT (variant, store, week) — re-running the normalizer for the
-    # same raw_offer (or another raw_offer that resolves to the same variant in
-    # the same week) is a no-op rather than an error. We update last-seen-style
-    # fields so the snapshot reflects the freshest scrape if the price moved
-    # mid-week.
     cur.execute(
         """
         INSERT INTO offer_snapshots (
@@ -581,7 +612,6 @@ def _upsert_current_offer(cur, snapshot: dict[str, Any]) -> None:
     if existing is not None:
         existing_week, existing_price = existing
         if existing_week is not None and snapshot["week_starting"] is not None and existing_week > snapshot["week_starting"]:
-            # Backfill of an older week — don't touch current_offers.
             return
         previous_price = existing_price
     else:
@@ -620,7 +650,6 @@ def _upsert_current_offer(cur, snapshot: dict[str, Any]) -> None:
         ),
     )
 
-    # price_changes only makes sense when both sides are real prices.
     if (
         previous_price is None
         or snapshot["price"] is None
@@ -792,12 +821,23 @@ def run_normalization(
                             normalization_version = "deterministic_v1"
                             chosen_result = build_fallback_ai_result(preprocessed)
 
-                            cached = _lookup_existing_normalization(
+                            cached = _lookup_by_store_product_key(
                                 cur,
                                 store_id=row.get("store_id"),
-                                content_hash=row.get("content_hash"),
+                                store_product_key=row.get("store_product_key"),
                                 raw_offer_id=raw_offer_id,
                             )
+                            cache_source = "store_product_key" if cached else None
+
+                            if cached is None:
+                                cached = _lookup_existing_normalization(
+                                    cur,
+                                    store_id=row.get("store_id"),
+                                    content_hash=row.get("content_hash"),
+                                    raw_offer_id=raw_offer_id,
+                                )
+                                if cached is not None:
+                                    cache_source = "content_hash"
 
                             if cached is not None:
                                 normalized_product_id, product_variant_id = cached
@@ -807,12 +847,12 @@ def run_normalization(
                                 subcategory_name = None
                                 family_id = None
                                 family_action = "cached"
-                                product_action = "reused_by_hash"
-                                variant_action = "reused_by_hash"
-                                normalization_version = "cached_by_content_hash"
+                                product_action = f"reused_by_{cache_source}"
+                                variant_action = f"reused_by_{cache_source}"
+                                normalization_version = f"cached_by_{cache_source}"
                                 logger.info(
-                                    "raw_offer id=%s reused np=%s variant=%s via content_hash (no AI call)",
-                                    raw_offer_id, normalized_product_id, product_variant_id,
+                                    "raw_offer id=%s reused np=%s variant=%s via %s (no AI call)",
+                                    raw_offer_id, normalized_product_id, product_variant_id, cache_source,
                                 )
                             else:
                                 if use_ai and openai_client is not None:
@@ -943,7 +983,7 @@ def run_normalization(
                                     variant_action,
                                     snapshot_action,
                                 )
-                            _ = snapshot_id  # kept for explicit flow/readability
+                            _ = snapshot_id
                             total_succeeded += 1
                         except Exception as exc:
                             total_failed += 1

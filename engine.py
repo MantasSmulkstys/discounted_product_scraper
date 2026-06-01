@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,8 +31,6 @@ class Product:
     url: str | None = None
     scraped_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-    def to_dict(self) -> dict:
-        return asdict(self)
 
 @dataclass
 class StoreConfig:
@@ -50,6 +48,8 @@ class StoreConfig:
     load_more: dict | None = None
     dismiss: list[str] | None = None
     viewport: dict[str, int] | None = None
+    extra_urls: list[str] | None = None
+    discover_urls: dict | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> StoreConfig:
@@ -69,6 +69,8 @@ class StoreConfig:
             load_more=raw.get("loadMore"),
             dismiss=raw.get("dismiss"),
             viewport=raw.get("viewport"),
+            extra_urls=raw.get("extraUrls"),
+            discover_urls=raw.get("discoverUrls"),
         )
 
 def parse_price_string(raw: str | None) -> float | None:
@@ -94,9 +96,6 @@ def resolve_price(card: Tag, price_def: dict | str) -> float | None:
     fmt = price_def.get("format", "single")
 
     if fmt == "fallback":
-        # Try each option in order; first non-None price wins. Useful when a
-        # store renders different markup for different promo types (e.g. Rimi
-        # has both ".price-label__price" cards and "-has-discount" cards).
         for option in price_def.get("options", []):
             result = resolve_price(card, option)
             if result is not None:
@@ -115,12 +114,15 @@ def resolve_price(card: Tag, price_def: dict | str) -> float | None:
         if not int_el:
             return None
         int_text = int_el.get_text().strip()
-        # Defend against markup that reuses the "integer" slot to show a
-        # discount label instead of a real price (e.g. IKI's card block
-        # can render either "0" + ".99" for €0.99 or "-20%" when the only
-        # thing displayed is the loyalty card discount percentage).
         if "%" in int_text:
             return None
+        # Some stores render a discount ("-30%") inside the same price block used
+        # for real prices. When opted in, treat a block containing "%" as a
+        # percentage badge, not a price, so it isn't misread as e.g. 30 €.
+        if price_def.get("skipIfPercent"):
+            parent = int_el.parent
+            if parent and "%" in parent.get_text():
+                return None
         integer = re.sub(r"[^\d]", "", int_text)
         fraction = re.sub(r"[^\d]", "", frac_el.get_text().strip()) if frac_el else "00"
         if not integer:
@@ -172,10 +174,6 @@ def resolve_discount(card: Tag, discount_def: dict | str | None) -> str | None:
         result = "".join(parts)
         if not result or not any(c.isdigit() for c in result):
             return None
-        # Opt-in safety net for feeds where the same promo box can render
-        # either a percent ("-40%") or an absolute final price ("0,99 €") —
-        # setting requirePercent avoids silently writing an absolute amount
-        # into the discount column as if it were a percent.
         if discount_def.get("requirePercent") and "%" not in result:
             return None
         if not result.startswith("-"):
@@ -196,10 +194,6 @@ def read_field(card: Tag, selector_def: dict | str | None, base_url: str = "") -
         el = card.select_one(selector_def)
         return el.get_text(strip=True) if el else None
 
-    # Fallback format: try each option in order, return the first non-empty
-    # result. Useful when a field (e.g. `condition`) can be represented by
-    # one of several distinct DOM shapes, like IKI's pigintuvas coupon vs.
-    # its "1+1" / "2+1" nplusn badge.
     if selector_def.get("format") == "fallback":
         for option in selector_def.get("options", []):
             result = read_field(card, option, base_url)
@@ -216,10 +210,6 @@ def read_field(card: Tag, selector_def: dict | str | None, base_url: str = "") -
     if attr:
         raw = el.get(attr, "")
     else:
-        # When `textSeparator` is provided, inline text nodes inside the
-        # selected element are joined with it instead of being glued
-        # together. Useful for promo wrappers where the label and the price
-        # value sit in sibling spans (e.g. IKI's ".pigintuvas_wrapper").
         text_separator = selector_def.get("textSeparator")
         if text_separator is not None:
             raw = el.get_text(text_separator, strip=True)
@@ -280,7 +270,83 @@ class BaseScraper:
     def scrape(self) -> list[Product]:
         if self.config.pagination:
             return self._scrape_paginated()
-        return self._scrape_single(self.config.url)
+        return self._scrape_urls(self._listing_urls())
+
+    def _listing_urls(self) -> list[str]:
+        """The listing pages to scrape: either discovered from a nav on the
+        site (so weekly-changing promo links never go stale) or the static
+        `url` + `extra_urls` from the config."""
+        if self.config.discover_urls:
+            discovered = self._discover_listing_urls()
+            if discovered:
+                return discovered
+            logger.warning(
+                "[%s] URL discovery found nothing; falling back to config url",
+                self.config.store,
+            )
+        return [self.config.url] + (self.config.extra_urls or [])
+
+    def _discover_listing_urls(self) -> list[str]:
+        """Fetch a page and read listing URLs from a nav selector. Lets a store
+        track its own (weekly-rotating) promo sections instead of hardcoding
+        links that go stale."""
+        disc = self.config.discover_urls or {}
+        source_url = disc.get("url") or self.config.url
+        selector = disc.get("selector")
+        attribute = disc.get("attribute", "href")
+        exclude = disc.get("exclude") or []
+        if not selector:
+            logger.error("[%s] discoverUrls needs a 'selector'", self.config.store)
+            return []
+
+        logger.info("[%s] Discovering listing URLs from %s", self.config.store, source_url)
+        html = self.fetcher.fetch(
+            url=source_url,
+            fetch_type=disc.get("type", self.config.type),
+            headers=self.config.headers,
+            wait_for=disc.get("waitFor"),
+            dismiss=self.config.dismiss,
+            viewport=self.config.viewport,
+        )
+        if not html:
+            logger.error("[%s] Discovery fetch failed for %s", self.config.store, source_url)
+            return []
+
+        soup = BeautifulSoup(html, "html.parser")
+        urls: list[str] = []
+        seen: set[str] = set()
+        for el in soup.select(selector):
+            href = el.get(attribute)
+            if not href:
+                continue
+            absolute = urljoin(source_url, href.strip())
+            if any(token in absolute for token in exclude):
+                continue
+            if absolute not in seen:
+                seen.add(absolute)
+                urls.append(absolute)
+
+        logger.info("[%s] Discovered %d listing URLs: %s", self.config.store, len(urls), urls)
+        return urls
+
+    def _scrape_urls(self, urls: list[str]) -> list[Product]:
+        """Scrape each listing URL, de-duplicating products by their URL so a
+        product appearing in two promo sections is only kept once."""
+        store = self.config.store
+        products: list[Product] = []
+        seen_urls: set[str] = set()
+        for url in urls:
+            more = self._scrape_single(url)
+            added = 0
+            for product in more:
+                if product.url and product.url in seen_urls:
+                    continue
+                if product.url:
+                    seen_urls.add(product.url)
+                products.append(product)
+                added += 1
+            logger.info("[%s] %s -> +%d new (%d dups)", store, url, added, len(more) - added)
+        return products
 
     def _scrape_single(self, url: str) -> list[Product]:
         store = self.config.store
@@ -364,10 +430,6 @@ class BaseScraper:
 
         price = resolve_price(card, sel.get("price", {}))
         old_price_def = sel.get("oldPrice")
-        # When oldPrice uses a structured price spec (e.g. split integer /
-        # fraction selectors), route it through resolve_price so it can pull
-        # from two elements the same way the main price does. Plain string /
-        # attribute-style configs keep the original read_field path.
         if isinstance(old_price_def, dict) and old_price_def.get("format"):
             old_price = resolve_price(card, old_price_def)
         else:
@@ -410,9 +472,81 @@ class BaseScraper:
             url=product_url,
         )
 
-    def _validate(self, product: Product) -> bool:
+    def _why_invalid(self, product: Product | None) -> str | None:
+        """Reason a card would be dropped, or None if it's a valid product.
+
+        Single source of truth for both `_validate` (production filter) and
+        `scrape_debug` (manual review), so the two can never disagree.
+        """
+        if product is None:
+            return "extract returned None (no name matched the selector)"
         if not product.name:
-            return False
+            return "no name"
         if product.price is None and not product.discount and not product.condition:
-            return False
-        return True
+            return "no price, no discount, no condition"
+        return None
+
+    def _validate(self, product: Product) -> bool:
+        return self._why_invalid(product) is None
+
+    def _debug_urls(self) -> list[str]:
+        """Listing URLs scrape() would visit (incl. discovered ones). For
+        paginated stores this is page 1 only — enough to spot selector problems
+        without fetching every page."""
+        if self.config.pagination:
+            return [self.config.url]
+        return self._listing_urls()
+
+    def scrape_debug(self) -> list[dict]:
+        """Like scrape(), but returns ONE entry per matched card — including the
+        ones that would be skipped — each with a `_skipped_reason` and an HTML
+        excerpt when invalid. No validation filtering. For manual review only.
+        """
+        store = self.config.store
+        entries: list[dict] = []
+        index = 0
+
+        for url in self._debug_urls():
+            logger.info("[%s] (debug) Fetching %s", store, url)
+            html = self.fetcher.fetch(
+                url=url,
+                fetch_type=self.config.type,
+                headers=self.config.headers,
+                scroll=self.config.scroll,
+                wait_for=self.config.wait_for,
+                load_more=self.config.load_more,
+                dismiss=self.config.dismiss,
+                viewport=self.config.viewport,
+            )
+            if not html:
+                logger.error("[%s] (debug) Failed to fetch %s", store, url)
+                continue
+
+            soup = BeautifulSoup(html, "html.parser")
+            cards = soup.select(self.config.container)
+            logger.info("[%s] (debug) %d cards from %s", store, len(cards), url)
+
+            for card in cards:
+                entry: dict = {"_index": index, "_source_url": url, "store": store}
+                index += 1
+                try:
+                    product = self._extract(card)
+                except Exception as exc:
+                    entry["_skipped_reason"] = f"extraction error: {type(exc).__name__}: {exc}"
+                    entry["_card_html_excerpt"] = str(card)[:600]
+                    entries.append(entry)
+                    continue
+
+                if product is not None:
+                    entry.update(asdict(product))
+
+                reason = self._why_invalid(product)
+                if reason:
+                    entry["_skipped_reason"] = reason
+                    entry["_card_html_excerpt"] = str(card)[:600]
+                entries.append(entry)
+
+        valid = sum(1 for e in entries if "_skipped_reason" not in e)
+        logger.info("[%s] (debug) %d cards: %d valid, %d skipped",
+                    store, len(entries), valid, len(entries) - valid)
+        return entries

@@ -22,8 +22,9 @@ data/tmp/
 logs/
 *.log
 
-# Debug dumps from debug_store.py
-debug_*.json
+# Scrape/normalize output artifacts
+normalized_offers.json
+raw_scrape.json
 
 # Jupyter
 .ipynb_checkpoints/

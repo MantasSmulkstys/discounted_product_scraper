@@ -17,6 +17,7 @@ from normalization.preprocess import (
     parse_unit_price,
     parse_valid_dates,
     preprocess_raw_offer,
+    strip_descriptors,
 )
 
 
@@ -32,6 +33,32 @@ class TestCleanProductName:
 
     def test_empty_input(self) -> None:
         assert clean_product_name("") == ""
+
+
+class TestStripDescriptors:
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("KREKENAVOS virtos dešrelės, a. r., 1 kg", "KREKENAVOS virtos dešrelės"),
+            ("Pomidorai ROMANTICA RIMI 1 kl., 400 g", "Pomidorai ROMANTICA RIMI"),
+            ("Šaltkrepšis su kietu įdėklu, art. 20240419, 1 vnt.", "Šaltkrepšis su kietu įdėklu"),
+            ("Šviežias pienas Rokiškio 1 L", "Šviežias pienas Rokiškio"),
+            ("Sultys 900 ml", "Sultys"),
+            ("Kiaušiniai 10 vnt.", "Kiaušiniai"),
+        ],
+    )
+    def test_strips_quantities_and_noise(self, raw: str, expected: str) -> None:
+        assert strip_descriptors(raw) == expected
+
+    def test_keeps_fat_percent_and_flavor(self) -> None:
+        assert strip_descriptors("Grietinė 30% riebumo, 380 g") == "Grietinė 30% riebumo"
+
+    def test_does_not_clip_words_that_start_like_a_unit(self) -> None:
+        # "litras"/"gabaliukai" must survive — the unit must be its own token.
+        assert strip_descriptors("Pienas 1 litras") == "Pienas 1 litras"
+
+    def test_empty_input(self) -> None:
+        assert strip_descriptors("") == ""
 
 
 class TestParseUnitPrice:
@@ -94,7 +121,6 @@ class TestParseValidDates:
         assert parse_valid_dates(raw, self.REF) == (None, expected_to)
 
     def test_iki_rolls_year_when_inferred_date_is_in_the_past(self) -> None:
-        # Scraped late December, leaflet says "Iki 01.05" → next January.
         assert parse_valid_dates("Iki 01.05", "2026-12-20T00:00:00Z") == (
             None,
             date(2027, 1, 5),
@@ -104,8 +130,6 @@ class TestParseValidDates:
         assert parse_valid_dates("Nuo 05.11", self.REF) == (date(2026, 5, 11), None)
 
     def test_bare_single_date_defaults_to_valid_to(self) -> None:
-        # Maxima's transform used to strip the "Iki" prefix; if any store does
-        # the same, fall back to the most-likely interpretation (end date).
         assert parse_valid_dates("05.11", self.REF) == (None, date(2026, 5, 11))
 
 
@@ -166,7 +190,7 @@ class TestPreprocessRawOffer:
         out = preprocess_raw_offer(row)
 
         assert out["raw_offer_id"] == 42
-        assert out["clean_name"] == "Šviežias pienas Rokiškio 1 L"
+        assert out["clean_name"] == "Šviežias pienas Rokiškio"  # quantity stripped for display
         assert out["price"] == Decimal("1.49")
         assert out["old_price"] == Decimal("2.09")
         assert out["unit_price_value"] == Decimal("1.49")

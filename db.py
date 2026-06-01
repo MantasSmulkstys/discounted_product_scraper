@@ -56,16 +56,83 @@ def _normalize_url(value: str | None) -> str:
 
 
 def build_external_id(product: Product) -> str:
+    """Within-week duplicate key (`content_hash`).
+
+    Two scraped cards collapse to one raw_offers row only when ALL of these
+    match. `image` is included so that for url-less stores (norfa, maxima,
+    aibe) two genuinely different products that happen to share a name are kept
+    apart — without it, the key degrades to roughly store+name and silently
+    merges distinct products. `price` is deliberately excluded: it's the value
+    we track over time, not part of a product's identity. Image URLs are
+    normalized (query/fragment stripped) so cache-busting params don't fork the
+    key within a week.
+    """
     fingerprint = "|".join(
         [
             _normalize_text(product.store),
             _normalize_text(product.name),
             _normalize_url(product.url),
+            _normalize_url(product.image),
             _normalize_text(product.unit_price),
             _normalize_text(product.condition),
         ]
     )
     return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+
+
+_PLACEHOLDER_IMAGE_TOKENS = (
+    "placeholder",
+    "no-image",
+    "no_image",
+    "default-product",
+)
+
+
+def _is_placeholder_image(image_url: str) -> bool:
+    lowered = image_url.lower()
+    return any(token in lowered for token in _PLACEHOLDER_IMAGE_TOKENS)
+
+
+def compute_store_product_key(
+    product: Product, store_config: StoreConfig | None
+) -> tuple[str | None, str | None]:
+    """Per-store stable identity for a scraped product.
+
+    Tries signals in order and returns the first hit as (key, source):
+      1. `url` — only if it differs from the store's listing page (Norfa
+         points every card at the same promo URL, which would otherwise
+         collapse everything into one product).
+      2. `image` — canonicalized image URL, minus obvious placeholders.
+      3. `text` — sha256 of (clean name + unit_price). Last resort, used
+         when the store exposes neither a per-product URL nor a usable image.
+
+    Returns (None, None) when nothing usable is present — the caller should
+    treat the row as unidentifiable rather than synthesizing a key, otherwise
+    every nameless row would merge into a single fake product.
+    """
+    listing_url = _normalize_url(store_config.url) if store_config else ""
+
+    if product.url:
+        candidate = _normalize_url(product.url)
+        if candidate and candidate != listing_url:
+            return candidate, "url"
+
+    if product.image:
+        candidate = _normalize_url(product.image)
+        if candidate and not _is_placeholder_image(candidate):
+            return candidate, "image"
+
+    if product.name:
+        fingerprint = "|".join(
+            [
+                _normalize_text(product.name),
+                _normalize_text(product.unit_price),
+            ]
+        )
+        if fingerprint.strip("|"):
+            return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest(), "text"
+
+    return None, None
 
 
 def _parse_scraped_at(value: str) -> datetime:
@@ -241,7 +308,6 @@ def save_raw_offers(
             store_map = _ensure_store_ids(cur, store_configs)
             conn.commit()
 
-            # Group products by store so each store gets its own batch.
             products_by_store: dict[str, list[Product]] = {}
             for product in products:
                 products_by_store.setdefault(product.store, []).append(product)
@@ -259,6 +325,7 @@ def save_raw_offers(
                 skipped = 0
                 for product in store_products:
                     content_hash = build_external_id(product)
+                    store_product_key, key_source = compute_store_product_key(product, store_config)
                     offer_url = _fit_varchar(_build_offer_url(product, store_config), "url")
                     if offer_url is None:
                         logger.warning("[%s] Skipping product without storable url: %s", product.store, product.name)
@@ -267,6 +334,8 @@ def save_raw_offers(
 
                     rows.append({
                         "content_hash": content_hash,
+                        "store_product_key": store_product_key,
+                        "key_source": key_source,
                         "store_id": store_id,
                         "name": product.name,
                         "price": product.price,
@@ -286,12 +355,14 @@ def save_raw_offers(
                     cur.executemany(
                         """
                         INSERT INTO raw_offers (
-                            content_hash, store_id, name, price, old_price, discount,
+                            content_hash, store_product_key, key_source,
+                            store_id, name, price, old_price, discount,
                             condition, unit_price, image, url, valid_dates,
                             loyalty_card, scraped_at, scrape_batch_id
                         )
                         VALUES (
-                            %(content_hash)s, %(store_id)s, %(name)s, %(price)s,
+                            %(content_hash)s, %(store_product_key)s, %(key_source)s,
+                            %(store_id)s, %(name)s, %(price)s,
                             %(old_price)s, %(discount)s, %(condition)s, %(unit_price)s,
                             %(image)s, %(url)s, %(valid_dates)s, %(loyalty_card)s,
                             %(scraped_at)s, %(scrape_batch_id)s
@@ -307,6 +378,8 @@ def save_raw_offers(
                             valid_dates = EXCLUDED.valid_dates,
                             loyalty_card = EXCLUDED.loyalty_card,
                             scraped_at = EXCLUDED.scraped_at,
+                            store_product_key = EXCLUDED.store_product_key,
+                            key_source = EXCLUDED.key_source,
                             updated_at = NOW()
                         """,
                         rows,
@@ -315,8 +388,19 @@ def save_raw_offers(
                 if skipped:
                     logger.info("[%s] Skipped %d products that could not fit the DB schema", store_name, skipped)
 
+                # Same-run accounting: how many scraped products actually became
+                # distinct raw_offers rows. `collapsed` = duplicates merged by the
+                # (scrape_batch_id, content_hash) constraint; the difference
+                # between this and a JSON-only scrape count is the DB dedup.
+                distinct = len({row["content_hash"] for row in rows})
+                collapsed = len(rows) - distinct
+                logger.info(
+                    "[%s] scraped=%d stored=%d collapsed_by_content_hash=%d skipped=%d",
+                    store_name, len(store_products), distinct, collapsed, skipped,
+                )
+
                 finish_scrape_batch(cur, batch_id)
                 conn.commit()
-                total_inserted += len(rows)
+                total_inserted += distinct
 
     return total_inserted

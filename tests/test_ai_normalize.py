@@ -120,7 +120,6 @@ class TestValidateAiOutput:
         assert result["family_key"] == "raudonosios vynuoges"
 
     def test_accepts_payload_without_family_key(self) -> None:
-        # Forward-compat: older AI payloads predate family_key. Shouldn't raise.
         payload = self._valid_payload()
         del payload["family_key"]
         result = validate_ai_output(payload)

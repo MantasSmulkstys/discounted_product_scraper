@@ -18,6 +18,9 @@ from fetcher import Fetcher
 
 CONFIGS_DIR = Path(__file__).parent / "configs"
 
+# Files in configs/ that are not store configs and must be skipped when loading.
+NON_STORE_CONFIGS = {"categories.json"}
+
 logger = logging.getLogger(__name__)
 
 load_env()
@@ -31,6 +34,8 @@ def _safe_print(text: str = "") -> None:
 def load_configs(store_filter: list[str] | None = None) -> list[StoreConfig]:
     configs: list[StoreConfig] = []
     for path in sorted(CONFIGS_DIR.glob("*.json")):
+        if path.name in NON_STORE_CONFIGS:
+            continue
         config = StoreConfig.from_file(path)
         if store_filter and config.store not in store_filter:
             continue
@@ -62,6 +67,41 @@ def _scrape_products(configs: list[StoreConfig]) -> list[Product]:
     finally:
         fetcher.close()
     return all_products
+
+
+def _scrape_debug(configs: list[StoreConfig]) -> list[dict]:
+    """Per-card diagnostics for every store: valid AND skipped cards."""
+    fetcher = Fetcher()
+    entries: list[dict] = []
+    try:
+        for config in configs:
+            scraper = BaseScraper(config, fetcher=fetcher)
+            entries.extend(scraper.scrape_debug())
+    finally:
+        fetcher.close()
+    return entries
+
+
+def print_debug_summary(entries: list[dict]) -> None:
+    from collections import Counter
+
+    by_store: dict[str, list[dict]] = {}
+    for entry in entries:
+        by_store.setdefault(entry.get("store", "?"), []).append(entry)
+
+    _safe_print("\n" + "=" * 60)
+    _safe_print(f"{'Store':<12} {'Cards':>7} {'Valid':>7} {'Skipped':>8}")
+    _safe_print("-" * 60)
+    for store, items in sorted(by_store.items()):
+        valid = sum(1 for e in items if "_skipped_reason" not in e)
+        _safe_print(f"{store:<12} {len(items):>7} {valid:>7} {len(items) - valid:>8}")
+    _safe_print("=" * 60)
+
+    reasons = Counter(e["_skipped_reason"] for e in entries if "_skipped_reason" in e)
+    if reasons:
+        _safe_print("Skip reasons:")
+        for reason, count in reasons.most_common():
+            _safe_print(f"  {count:>5}  {reason}")
 
 
 def run_scrape_pipeline(

@@ -1,0 +1,338 @@
+[
+  {
+    "category_id": 1,
+    "category_name": "MĖSA IR DEŠRA",
+    "subcategories": [
+      {
+        "subcategory_id": 1,
+        "subcategory_name": "PAKAVIMO MEDŽIAGA / PRIESKONIAI"
+      },
+      {
+        "subcategory_id": 2,
+        "subcategory_name": "KITOS RŪŠIES DEŠRA"
+      },
+      {
+        "subcategory_id": 3,
+        "subcategory_name": "PAUKŠTIENA"
+      },
+      {
+        "subcategory_id": 4,
+        "subcategory_name": "KIAULIENA"
+      },
+      {
+        "subcategory_id": 5,
+        "subcategory_name": "JAUTIENA"
+      },
+      {
+        "subcategory_id": 6,
+        "subcategory_name": "VERŠIENA"
+      },
+      {
+        "subcategory_id": 7,
+        "subcategory_name": "ĖRIENA"
+      },
+      {
+        "subcategory_id": 8,
+        "subcategory_name": "ŽVĖRIENA IR TRIUŠIENA"
+      },
+      {
+        "subcategory_id": 9,
+        "subcategory_name": "ŽUVIS"
+      },
+      {
+        "subcategory_id": 10,
+        "subcategory_name": "GAMYBA"
+      }
+    ]
+  },
+  {
+    "category_id": 2,
+    "category_name": "VAISIAI IR DARŽOVĖS",
+    "subcategories": [
+      {
+        "subcategory_id": 11,
+        "subcategory_name": "VAISIAI"
+      },
+      {
+        "subcategory_id": 12,
+        "subcategory_name": "DARŽOVĖS"
+      },
+      {
+        "subcategory_id": 13,
+        "subcategory_name": "VAISIŲ IR DARŽOVIŲ PUSGAMINIAI"
+      },
+      {
+        "subcategory_id": 14,
+        "subcategory_name": "AUGALAI"
+      }
+    ]
+  },
+  {
+    "category_id": 3,
+    "category_name": "ŠVIEŽI MAISTO PRODUKTAI",
+    "subcategories": [
+      {
+        "subcategory_id": 15,
+        "subcategory_name": "PIENO PRODUKTAI"
+      },
+      {
+        "subcategory_id": 16,
+        "subcategory_name": "ILGAI NEGENDANTYS MAISTO PRODUKTAI"
+      },
+      {
+        "subcategory_id": 17,
+        "subcategory_name": "SŪRIS"
+      },
+      {
+        "subcategory_id": 18,
+        "subcategory_name": "DELIKATESAI"
+      },
+      {
+        "subcategory_id": 19,
+        "subcategory_name": "ŠALDYTI PRODUKTAI"
+      },
+      {
+        "subcategory_id": 20,
+        "subcategory_name": "KIAUŠINIAI"
+      },
+      {
+        "subcategory_id": 21,
+        "subcategory_name": "ĮVAIRŪS ŠVIEŽI MAISTO PRODUKTAI"
+      },
+      {
+        "subcategory_id": 22,
+        "subcategory_name": "DUONA IR KEPINIAI"
+      }
+    ]
+  },
+  {
+    "category_id": 4,
+    "category_name": "KRUOPOS IR MAKARONŲ GAMINIAI",
+    "subcategories": [
+      {
+        "subcategory_id": 23,
+        "subcategory_name": "BŪTINIEJI MAISTO PRODUKTAI"
+      },
+      {
+        "subcategory_id": 24,
+        "subcategory_name": "ACTAS / ALIEJUS / RIEBALAI"
+      },
+      {
+        "subcategory_id": 25,
+        "subcategory_name": "SINTETINIAI SALDIKLIAI"
+      },
+      {
+        "subcategory_id": 26,
+        "subcategory_name": "SKONINĖS MEDŽIAGOS"
+      },
+      {
+        "subcategory_id": 27,
+        "subcategory_name": "SRIUBOS / PADAŽAI"
+      },
+      {
+        "subcategory_id": 28,
+        "subcategory_name": "SVEIKAS MAISTAS / DIETINIAI PRODUKTAI"
+      },
+      {
+        "subcategory_id": 29,
+        "subcategory_name": "KEPIMO PRIEMONĖS / RIEŠUTAI"
+      },
+      {
+        "subcategory_id": 30,
+        "subcategory_name": "PUDINGO / DESERTO MILTELIAI"
+      }
+    ]
+  },
+  {
+    "category_id": 5,
+    "category_name": "KONSERVAI",
+    "subcategories": [
+      {
+        "subcategory_id": 31,
+        "subcategory_name": "KONSERVUOTOS DARŽOVĖS IR VAISIAI"
+      },
+      {
+        "subcategory_id": 32,
+        "subcategory_name": "DŽEMAI / ŠOKOLADINIAI KREMAI"
+      },
+      {
+        "subcategory_id": 33,
+        "subcategory_name": "MĖSOS KONSERVAI / UŽTEPAI"
+      },
+      {
+        "subcategory_id": 34,
+        "subcategory_name": "ŽUVIES KONSERVAI / JŪROS GĖRYBĖS"
+      },
+      {
+        "subcategory_id": 35,
+        "subcategory_name": "GYVŪNŲ MAISTAS / PRIEŽIŪROS REIKMENYS"
+      },
+      {
+        "subcategory_id": 36,
+        "subcategory_name": "KŪDIKIŲ MAISTAS"
+      },
+      {
+        "subcategory_id": 37,
+        "subcategory_name": "ETNINIS MAISTAS"
+      }
+    ]
+  },
+  {
+    "category_id": 6,
+    "category_name": "GĖRIMAI",
+    "subcategories": [
+      {
+        "subcategory_id": 38,
+        "subcategory_name": "KAVA"
+      },
+      {
+        "subcategory_id": 39,
+        "subcategory_name": "ARBATA / KAKAVA"
+      },
+      {
+        "subcategory_id": 40,
+        "subcategory_name": "NEALKOHOLINIAI GĖRIMAI"
+      },
+      {
+        "subcategory_id": 41,
+        "subcategory_name": "ALUS"
+      },
+      {
+        "subcategory_id": 42,
+        "subcategory_name": "ALKOHOLINIAI GĖRIMAI"
+      },
+      {
+        "subcategory_id": 43,
+        "subcategory_name": "VYNAS / ŠAMPANIZUOTAS VYNAS"
+      }
+    ]
+  },
+  {
+    "category_id": 7,
+    "category_name": "ILGAI NEGENDANTYS KEPINIAI IR SALDUMYNAI",
+    "subcategories": [
+      {
+        "subcategory_id": 44,
+        "subcategory_name": "LENGVI UŽKANDŽIAI"
+      },
+      {
+        "subcategory_id": 45,
+        "subcategory_name": "ILGAI NEGENDANTYS KEPINIAI IR SAUSAINIAI"
+      },
+      {
+        "subcategory_id": 46,
+        "subcategory_name": "KRAMTOMOJI GUMA"
+      },
+      {
+        "subcategory_id": 47,
+        "subcategory_name": "ŠOKOLADAS"
+      },
+      {
+        "subcategory_id": 48,
+        "subcategory_name": "SALDUMYNAI"
+      },
+      {
+        "subcategory_id": 49,
+        "subcategory_name": "SEZONINIAI MAISTO PRODUKTAI"
+      }
+    ]
+  },
+  {
+    "category_id": 8,
+    "category_name": "SKALBIMO PRIEMONĖS",
+    "subcategories": [
+      {
+        "subcategory_id": 50,
+        "subcategory_name": "SKALBIMO PRIEMONĖS / PRIEDAI"
+      },
+      {
+        "subcategory_id": 51,
+        "subcategory_name": "INDŲ PLOVIKLIAI / VALYMO PRIEMONĖS"
+      },
+      {
+        "subcategory_id": 52,
+        "subcategory_name": "SANITARINĖS PRIEMONĖS"
+      },
+      {
+        "subcategory_id": 53,
+        "subcategory_name": "BATŲ PRIEŽIŪROS PRIEMONĖS / REIKMENYS"
+      }
+    ]
+  },
+  {
+    "category_id": 9,
+    "category_name": "PARFUMERIJOS GAMINIAI",
+    "subcategories": [
+      {
+        "subcategory_id": 54,
+        "subcategory_name": "PLAUKŲ PRIEŽIŪROS PRIEMONĖS"
+      },
+      {
+        "subcategory_id": 55,
+        "subcategory_name": "DANTŲ / PĖDŲ PRIEŽIŪROS PRIEMONĖS"
+      },
+      {
+        "subcategory_id": 56,
+        "subcategory_name": "KOSMETIKA"
+      },
+      {
+        "subcategory_id": 57,
+        "subcategory_name": "MUILAS / VONIOS IR DUŠO ŽELĖ"
+      },
+      {
+        "subcategory_id": 58,
+        "subcategory_name": "KŪNO PRIEŽIŪROS PRIEMONĖS / APSAUGA"
+      },
+      {
+        "subcategory_id": 59,
+        "subcategory_name": "POPIERIAUS GAMINIAI"
+      }
+    ]
+  },
+  {
+    "category_id": 10,
+    "category_name": "NE MAISTO PREKĖS",
+    "subcategories": [
+      {
+        "subcategory_id": 60,
+        "subcategory_name": "TEKSTILĖS GAMINIAI / DRABUŽIAI"
+      },
+      {
+        "subcategory_id": 61,
+        "subcategory_name": "VIRTUVĖS REIKMENYS"
+      },
+      {
+        "subcategory_id": 62,
+        "subcategory_name": "NAMŲ APYVOKOS REIKMENYS"
+      },
+      {
+        "subcategory_id": 63,
+        "subcategory_name": "ŽAIDIMAI / KNYGOS / MUZIKA"
+      },
+      {
+        "subcategory_id": 64,
+        "subcategory_name": "SODO / TABAKO GAMINIAI"
+      },
+      {
+        "subcategory_id": 65,
+        "subcategory_name": "SEZONINĖS / MOKYKLINĖS / KANCELIARINĖS PREKĖS"
+      },
+      {
+        "subcategory_id": 66,
+        "subcategory_name": "KREPŠELIAI SU RANKENOMIS / KREPŠIAI"
+      },
+      {
+        "subcategory_id": 67,
+        "subcategory_name": "PAKUOTĖS MEDŽIAGA ĮSKAITYTA"
+      },
+      {
+        "subcategory_id": 68,
+        "subcategory_name": "FILIALO / PREKYBOS CENTRO KAŠTAI"
+      },
+      {
+        "subcategory_id": 69,
+        "subcategory_name": "PAKAVIMO MEDŽIAGOS / SKIRTUMAI"
+      }
+    ]
+  }
+]

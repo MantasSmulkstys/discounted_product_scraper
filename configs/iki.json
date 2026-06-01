@@ -2,19 +2,32 @@
   "store": "iki",
   "url": "https://iki.lt/akcijos/savaites-akcijos/",
   "type": "dynamic",
-  "container": ".akcijoskortele",
+  "container": ".product",
+
+  "discoverUrls": {
+    "url": "https://iki.lt/akcijos/savaites-akcijos/",
+    "selector": ".offers-types .items a, .offers-categories .items a",
+    "attribute": "href",
+    "type": "dynamic",
+    "exclude": ["ispardavimo-prekes"]
+  },
 
   "scroll": {
-    "delay": 1.5,
-    "maxScrolls": 50
+    "mode": "bottom",
+    "delay": 2.0,
+    "maxScrolls": 100,
+    "batchScrolls": 100,
+    "rounds": 4,
+    "countSelector": ".product"
   },
 
   "selectors": {
-    "name": ".akcija_title",
+    "name": "h2",
     "price": {
       "format": "split",
       "integer": ".price_block_wrapper > .price_int",
-      "fraction": ".price_block_wrapper > .price_cents > .sub"
+      "fraction": ".price_block_wrapper > .price_cents > .sub",
+      "skipIfPercent": true
     },
     "oldPrice": {
       "format": "split",
@@ -22,20 +35,37 @@
       "fraction": ".price_old_block .price_cents"
     },
     "image": {
-      "selector": ".akcija__image img",
+      "selector": "img.object-fit-cover",
       "attribute": "src"
     },
+    "url": {
+      "selector": "a[href]",
+      "attribute": "href"
+    },
     "validDates": {
-      "selector": ".akcija_description.text-center",
+      "selector": "p.text-px-14",
       "regex": "Galioja:\\s*(.+)"
     },
     "discount": {
-      "format": "composed",
-      "requirePercent": true,
-      "parts": [
-        ".price_block_rounded_red_wrapper .minus",
-        ".price_block_rounded_red_wrapper .main",
-        ".price_block_rounded_red_wrapper .percentage"
+      "format": "fallback",
+      "options": [
+        {
+          "format": "composed",
+          "requirePercent": true,
+          "parts": [
+            "[class*=\"red_wrapper\"]:not(.pigintuvas_wrapper) .minus",
+            "[class*=\"red_wrapper\"]:not(.pigintuvas_wrapper) .main",
+            "[class*=\"red_wrapper\"]:not(.pigintuvas_wrapper) .percentage"
+          ]
+        },
+        {
+          "format": "composed",
+          "requirePercent": true,
+          "parts": [
+            ".price_block_wrapper .price_int",
+            ".price_block_wrapper .price_int ~ .price_cents .sub"
+          ]
+        }
       ]
     },
     "condition": {
@@ -50,7 +80,7 @@
           "textSeparator": " "
         },
         {
-          "selector": ".price_block_rounded_red_wrapper:not(:has(.percentage)) .main"
+          "selector": "[class*=\"red_wrapper\"]:not(:has(.percentage)) .main"
         }
       ]
     }
