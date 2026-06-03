@@ -29,6 +29,27 @@ _SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", re.IGNORECASE)
 _PACKAGE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(vnt\.?)\b", re.IGNORECASE)
 _PRICE_EUR_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*€", re.IGNORECASE)
 
+# Tokens that identify a *specific* SKU within an otherwise identically-named
+# product. These are deliberately discarded from the display name but must be
+# kept as a variant discriminator, otherwise two distinct articles (e.g. two
+# kettle models, or bouquets of 30 vs 9 stems) collapse into one product and
+# share a single — meaningless — price history.
+# The literal "art." dot is required so Lithuanian words like "artišokai" or
+# "artistas" are never mistaken for an article code. The code runs until a
+# comma/semicolon, another "art.", or the Lithuanian "arba" ("or") that joins
+# alternative codes — so multi-token codes like "HTD 889 CB" are kept whole
+# instead of being truncated to "HTD".
+_ART_CODE_RE = re.compile(
+    r"\bart\.\s*([A-Za-z0-9][^,;]*?)\s*(?=,|;|\barba\b|\bart\.|$)",
+    re.IGNORECASE,
+)
+# A multipack count ("× 30 vnt", "– 9 vnt"). A lone "1 vnt" is just "a single
+# item" and carries no discriminating signal, so it is ignored below.
+_MULTIPACK_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*vnt\.?", re.IGNORECASE)
+# Linear dimensions the size parser ignores (it only handles kg/g/ml/l), e.g.
+# the "50 cm" stem length of a flower bouquet.
+_DIMENSION_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(cm|mm)\b", re.IGNORECASE)
+
 
 def _to_decimal(value: str | int | float | Decimal | None) -> Decimal | None:
     if value is None:
@@ -129,8 +150,11 @@ _DESCRIPTOR_PATTERNS: tuple[re.Pattern[str], ...] = (
     # The trailing lookahead means the unit must be its own token, so a word
     # like "gabaliukai" or "litras" is never clipped.
     re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|cl|l|vnt)\.?(?=\s|,|;|$)", re.IGNORECASE),
-    # article/SKU codes, e.g. "art. 20240419"
-    re.compile(r"\bart\.?\s*\d+", re.IGNORECASE),
+    # article/SKU codes up to the next separator, e.g. "art. 20240419",
+    # "art. HTD 889 CB". The dot is required so words like "artišokai" are not
+    # clipped. Kept as a variant discriminator via detect_variant_code() before
+    # this strips it from the display name.
+    re.compile(r"\bart\.\s*[A-Za-z0-9][^,;]*", re.IGNORECASE),
     # retail grade, e.g. "a. r.", "I r.", "II r."
     re.compile(r"\b(?:[ivx]+|a)\.?\s*r\.", re.IGNORECASE),
     # quality class, e.g. "1 kl.", "2 kl."
@@ -363,6 +387,68 @@ def detect_quantity_from_name(name: str) -> dict[str, Decimal | str | None]:
     return result
 
 
+def _quantity_token(value: Decimal) -> str:
+    """Stable string form of a quantity for use inside a variant code:
+    `Decimal("30")` -> "30", `Decimal("0.50")` -> "0.5"."""
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def detect_variant_code(name: str) -> str | None:
+    """A deterministic per-SKU discriminator derived from the raw name.
+
+    The normalizer strips article codes and quantities from the display name,
+    and the AI often flattens multipack counts — so two genuinely different
+    articles can land on the same `normalized_name` + size, merging into one
+    product. This code is folded into the product_variant identity so they stay
+    separate. It only captures signals that are stable for a given SKU and do
+    *not* vary by store wording (article codes, multipack counts, linear
+    dimensions); weights/volumes are left to the size parser to avoid
+    over-splitting the same product across stores.
+
+    Returns None when nothing distinguishing is present (the common case for
+    plain groceries like "Bananai"), so normal cross-store merging is untouched.
+
+    Examples:
+        "Elektrinis virdulys ONEX, art. KT-S08, 1 vnt." -> "art:KT-S08"
+        "Kapų žvakė art.0508 arba art.0532, 1 vnt."      -> "art:0508-0532"
+        "Gvazdikų puokštė, 50 cm, 1 puokštė – 30 vnt."   -> "d:50cm|x:30vnt"
+        "Bananai"                                         -> None
+    """
+    if not name:
+        return None
+
+    parts: list[str] = []
+
+    codes = []
+    for match in _ART_CODE_RE.finditer(name):
+        code = _WS_RE.sub("-", match.group(1).strip()).upper()
+        if code:
+            codes.append(code)
+    if codes:
+        parts.append("art:" + "-".join(codes))
+
+    counts = []
+    for match in _MULTIPACK_RE.finditer(name):
+        value = _to_decimal(match.group(1))
+        if value is not None and value != 1:
+            counts.append(_quantity_token(value) + "vnt")
+    if counts:
+        parts.append("x:" + "-".join(sorted(counts)))
+
+    dimensions = []
+    for match in _DIMENSION_RE.finditer(name):
+        value = _to_decimal(match.group(1))
+        if value is not None:
+            dimensions.append(_quantity_token(value) + match.group(2).lower())
+    if dimensions:
+        parts.append("d:" + "-".join(sorted(dimensions)))
+
+    return "|".join(parts) if parts else None
+
+
 def preprocess_raw_offer(raw_offer: dict[str, Any]) -> dict[str, Any]:
     """
     Build deterministic preprocessed payload from one raw_offers row.
@@ -382,6 +468,7 @@ def preprocess_raw_offer(raw_offer: dict[str, Any]) -> dict[str, Any]:
     unit_price_value, unit_price_unit = parse_unit_price(unit_price_raw)
 
     quantity = detect_quantity_from_name(conservative_name)
+    variant_code = detect_variant_code(conservative_name)
 
     return {
         "raw_offer_id": raw_offer.get("id"),
@@ -407,4 +494,5 @@ def preprocess_raw_offer(raw_offer: dict[str, Any]) -> dict[str, Any]:
         "detected_size_unit": quantity["size_unit"],
         "detected_package_count": quantity["package_count"],
         "detected_package_unit": quantity["package_unit"],
+        "detected_variant_code": variant_code,
     }

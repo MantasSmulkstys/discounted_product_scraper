@@ -25,6 +25,7 @@ from normalization.ai_normalize import (  # noqa: E402
     build_ai_input,
     build_fallback_ai_result,
     load_allowed_categories,
+    load_allowed_families,
     normalize_identity_text,
     normalize_with_ai,
     resolve_category_ids,
@@ -427,6 +428,29 @@ def _build_variant_name(preprocessed: dict[str, Any]) -> str | None:
     return " / ".join(parts)
 
 
+def _load_variant_attributes(cur, variant_id: int) -> dict[str, Any]:
+    """Read a cached variant's AI-assigned size/package so a cache hit can be
+    re-resolved through the identity (size/package + variant_code) without
+    losing the size the AI originally chose."""
+    cur.execute(
+        """
+        SELECT variant_name, size_value, size_unit, package_count, package_unit,
+               net_quantity_value, net_quantity_unit, attributes
+        FROM product_variants WHERE id = %s
+        """,
+        (variant_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return {}
+
+    columns = [
+        "variant_name", "size_value", "size_unit", "package_count", "package_unit",
+        "net_quantity_value", "net_quantity_unit", "attributes",
+    ]
+    return dict(zip(columns, row))
+
+
 def _find_or_create_product_variant(
     cur,
     normalized_product_id: int | None,
@@ -441,6 +465,10 @@ def _find_or_create_product_variant(
     size_unit = variant_data.get("size_unit")
     package_count = variant_data.get("package_count")
     package_unit = variant_data.get("package_unit")
+    # Deterministic per-SKU discriminator (article code / multipack count /
+    # dimension). Keeps distinct articles that share a name+size from collapsing
+    # into one variant and one meaningless shared price history.
+    variant_code = preprocessed.get("detected_variant_code")
 
     if dry_run:
         cur.execute(
@@ -450,9 +478,10 @@ def _find_or_create_product_variant(
                 || '|' || COALESCE(%s,'')
                 || '|' || COALESCE(%s::text,'')
                 || '|' || COALESCE(%s,'')
+                || '|' || COALESCE(%s,'')
             LIMIT 1
             """,
-            (normalized_product_id, size_value, size_unit, package_count, package_unit),
+            (normalized_product_id, size_value, size_unit, package_count, package_unit, variant_code),
         )
         row = cur.fetchone()
         return (int(row[0]), "reused") if row else (None, "would_insert")
@@ -462,10 +491,10 @@ def _find_or_create_product_variant(
         INSERT INTO product_variants (
             normalized_product_id, variant_name,
             size_value, size_unit, package_count, package_unit,
-            net_quantity_value, net_quantity_unit,
+            net_quantity_value, net_quantity_unit, variant_code,
             attributes, created_at, updated_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(), NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(), NOW())
         ON CONFLICT (identity_key) DO UPDATE SET updated_at = NOW()
         RETURNING id, (xmax = 0) AS inserted
         """,
@@ -478,6 +507,7 @@ def _find_or_create_product_variant(
             package_unit,
             variant_data.get("net_quantity_value"),
             variant_data.get("net_quantity_unit"),
+            variant_code,
             json.dumps(variant_data.get("attributes") or {}),
         ),
     )
@@ -532,6 +562,7 @@ def _insert_offer_snapshot(
 
     payload = {
         "raw_offer_id": int(row["id"]),
+        "raw_name": row.get("name"),
         "product_variant_id": product_variant_id,
         "store_id": row.get("store_id"),
         "scrape_batch_id": row.get("scrape_batch_id"),
@@ -591,9 +622,24 @@ def _insert_offer_snapshot(
     return (int(result[0]), "inserted" if result[1] else "updated", payload)
 
 
+def compute_change_pct(previous_price: Any, new_price: Any) -> float | None:
+    """Signed percentage change between two prices, or None when the comparison
+    is not meaningful (missing value, zero base, or no change)."""
+    if previous_price is None or new_price is None:
+        return None
+    try:
+        previous = float(previous_price)
+        new = float(new_price)
+    except (TypeError, ValueError):
+        return None
+    if previous == 0 or previous == new:
+        return None
+    return round((new - previous) / previous * 100, 2)
+
+
 def _upsert_current_offer(cur, snapshot: dict[str, Any]) -> None:
-    """Refresh `current_offers` to reflect this snapshot, and write a
-    `price_changes` row when the price actually moved.
+    """Refresh `current_offers` to reflect this snapshot, and record a
+    `price_changes` row when the price moved versus the previous week.
 
     Called only for snapshots whose week is the latest known week for this
     (store, variant). Older backfill snapshots should not overwrite a fresher
@@ -601,7 +647,7 @@ def _upsert_current_offer(cur, snapshot: dict[str, Any]) -> None:
     """
     cur.execute(
         """
-        SELECT week_starting, price FROM current_offers
+        SELECT week_starting FROM current_offers
         WHERE store_id = %s AND product_variant_id = %s
         FOR UPDATE
         """,
@@ -610,12 +656,9 @@ def _upsert_current_offer(cur, snapshot: dict[str, Any]) -> None:
     existing = cur.fetchone()
 
     if existing is not None:
-        existing_week, existing_price = existing
+        (existing_week,) = existing
         if existing_week is not None and snapshot["week_starting"] is not None and existing_week > snapshot["week_starting"]:
             return
-        previous_price = existing_price
-    else:
-        previous_price = None
 
     cur.execute(
         """
@@ -650,19 +693,46 @@ def _upsert_current_offer(cur, snapshot: dict[str, Any]) -> None:
         ),
     )
 
-    if (
-        previous_price is None
-        or snapshot["price"] is None
-        or previous_price == snapshot["price"]
-    ):
+    _record_price_change(cur, snapshot)
+
+
+def _record_price_change(cur, snapshot: dict[str, Any]) -> None:
+    """Record a `price_changes` row by matching the previous price on the exact
+    raw card name within the same store, comparing the actual displayed price.
+
+    Matching on `raw_name` (rather than `product_variant_id`) keeps the
+    comparison stable even when AI normalization assigns a different variant to
+    the same card from one week to the next; the same variant is preferred when
+    several prior matches exist.
+    """
+    new_price = snapshot["price"]
+    raw_name = snapshot.get("raw_name")
+    week_starting = snapshot["week_starting"]
+
+    if new_price is None or not raw_name or week_starting is None:
         return
 
-    change_pct = None
-    try:
-        if previous_price and float(previous_price) != 0:
-            change_pct = round((float(snapshot["price"]) - float(previous_price)) / float(previous_price) * 100, 2)
-    except (TypeError, ValueError):
-        change_pct = None
+    cur.execute(
+        """
+        SELECT os.price
+        FROM offer_snapshots os
+        JOIN raw_offers ro ON ro.id = os.raw_offer_id
+        WHERE os.store_id = %s
+          AND ro.name = %s
+          AND os.week_starting < %s
+          AND os.price IS NOT NULL
+        ORDER BY (os.product_variant_id = %s) DESC, os.week_starting DESC, os.id DESC
+        LIMIT 1
+        """,
+        (snapshot["store_id"], raw_name, week_starting, snapshot["product_variant_id"]),
+    )
+    previous = cur.fetchone()
+    if previous is None:
+        return
+
+    change_pct = compute_change_pct(previous[0], new_price)
+    if change_pct is None:
+        return
 
     cur.execute(
         """
@@ -674,8 +744,8 @@ def _upsert_current_offer(cur, snapshot: dict[str, Any]) -> None:
         """,
         (
             snapshot["product_variant_id"], snapshot["store_id"],
-            previous_price, snapshot["price"], change_pct,
-            snapshot["week_starting"], snapshot["id"],
+            previous[0], new_price, change_pct,
+            week_starting, snapshot["id"],
         ),
     )
 
@@ -756,6 +826,7 @@ def run_normalization(
     offset = 0
     openai_client = _get_openai_client(openai_api_key) if use_ai else None
     allowed_categories: list[dict[str, Any]] = []
+    allowed_families: list[str] = []
 
     try:
         with _connect(db_config) as conn:
@@ -778,6 +849,11 @@ def run_normalization(
                 if use_ai:
                     allowed_categories = load_allowed_categories(cur)
                     logger.info("Loaded %d allowed categories for AI normalization.", len(allowed_categories))
+                    allowed_families = load_allowed_families(cur)
+                    logger.info(
+                        "Loaded %d existing family keys to constrain new offers (reuse-before-create).",
+                        len(allowed_families),
+                    )
                     if openai_client is None:
                         logger.warning("AI mode requested but no client available; deterministic fallback will be used.")
 
@@ -840,7 +916,7 @@ def run_normalization(
                                     cache_source = "content_hash"
 
                             if cached is not None:
-                                normalized_product_id, product_variant_id = cached
+                                normalized_product_id, cached_variant_id = cached
                                 category_id = None
                                 subcategory_id = None
                                 category_name = None
@@ -848,8 +924,28 @@ def run_normalization(
                                 family_id = None
                                 family_action = "cached"
                                 product_action = f"reused_by_{cache_source}"
-                                variant_action = f"reused_by_{cache_source}"
                                 normalization_version = f"cached_by_{cache_source}"
+
+                                if dry_run:
+                                    # Don't touch the DB; the cached variant is a
+                                    # good-enough preview value.
+                                    product_variant_id = cached_variant_id
+                                    variant_action = f"reused_by_{cache_source}"
+                                else:
+                                    # Re-resolve the variant under the cached
+                                    # product so the deterministic variant_code is
+                                    # honoured even on a cache hit (the cached
+                                    # variant may predate it). The cached variant's
+                                    # AI-assigned size/package are preserved.
+                                    base_variant = _load_variant_attributes(cur, cached_variant_id)
+                                    product_variant_id, variant_action = _find_or_create_product_variant(
+                                        cur,
+                                        normalized_product_id=normalized_product_id,
+                                        variant_data=base_variant,
+                                        preprocessed=preprocessed,
+                                        dry_run=dry_run,
+                                    )
+                                    variant_action = f"{variant_action}_via_{cache_source}"
                                 logger.info(
                                     "raw_offer id=%s reused np=%s variant=%s via %s (no AI call)",
                                     raw_offer_id, normalized_product_id, product_variant_id, cache_source,
@@ -858,7 +954,7 @@ def run_normalization(
                                 if use_ai and openai_client is not None:
                                     ai_used = True
                                     try:
-                                        ai_input = build_ai_input(preprocessed, allowed_categories)
+                                        ai_input = build_ai_input(preprocessed, allowed_categories, allowed_families)
 
                                         import time
                                         time.sleep(0.3)

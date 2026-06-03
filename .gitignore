@@ -25,6 +25,7 @@ logs/
 # Scrape/normalize output artifacts
 normalized_offers.json
 raw_scrape.json
+current_listings_*.json
 
 # Jupyter
 .ipynb_checkpoints/

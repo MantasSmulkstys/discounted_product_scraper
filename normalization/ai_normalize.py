@@ -122,6 +122,30 @@ def load_allowed_categories(cur) -> list[dict[str, Any]]:
     return list(categories.values())
 
 
+def load_allowed_families(cur, limit: int | None = None) -> list[str]:
+    """Load the existing family-key vocabulary from `product_families`.
+
+    Returns the distinct `normalized_family_name` values — the diacritic-stripped
+    keys the per-item normalizer should reuse verbatim when an offer fits one,
+    instead of inventing a near-duplicate that fragments a family. This is what
+    lets a small batch of new offers snap onto the families you already seeded
+    without a global recluster. Ordering is alphabetical so the prompt (and thus
+    the model's behavior) stays deterministic across runs.
+    """
+    sql = (
+        "SELECT DISTINCT normalized_family_name "
+        "FROM product_families "
+        "WHERE normalized_family_name IS NOT NULL AND normalized_family_name <> '' "
+        "ORDER BY normalized_family_name ASC"
+    )
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s"
+        params = (limit,)
+    cur.execute(sql, params)
+    return [str(row[0]) for row in cur.fetchall()]
+
+
 def load_allowed_categories_from_file(path: str | Path) -> list[dict[str, Any]]:
     """Load the allowed-category list from a static JSON file.
 
@@ -135,7 +159,11 @@ def load_allowed_categories_from_file(path: str | Path) -> list[dict[str, Any]]:
     return raw
 
 
-def build_ai_input(preprocessed: dict[str, Any], allowed_categories: list[dict[str, Any]]) -> dict[str, Any]:
+def build_ai_input(
+    preprocessed: dict[str, Any],
+    allowed_categories: list[dict[str, Any]],
+    allowed_families: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "store_name": preprocessed.get("store_name"),
         "raw_name": preprocessed.get("raw_name"),
@@ -155,6 +183,7 @@ def build_ai_input(preprocessed: dict[str, Any], allowed_categories: list[dict[s
         "detected_package_count": _to_float(preprocessed.get("detected_package_count")),
         "detected_package_unit": preprocessed.get("detected_package_unit"),
         "allowed_categories": allowed_categories,
+        "allowed_family_keys": allowed_families or [],
     }
 
 
@@ -284,11 +313,20 @@ def normalize_with_ai(client, ai_input: dict[str, Any]) -> dict[str, Any]:
         "- Frozen vs fresh splits; `šviežios` alone is dropped when fresh is the default.\n"
         "- Brand and packaging NEVER appear in family_key.\n"
         "\n"
+        "## REUSING EXISTING FAMILY KEYS\n"
+        "The input includes `allowed_family_keys`: keys already assigned to other\n"
+        "products in the catalog. If this item belongs to one of them, you MUST\n"
+        "output that key VERBATIM rather than inventing a near-duplicate — e.g. do\n"
+        "NOT emit `gazuotas vanduo` when `vanduo` is already listed and fits. Only\n"
+        "invent a NEW key when no listed key genuinely fits; a new key must still\n"
+        "obey every format rule above. If `allowed_family_keys` is empty, just\n"
+        "build the key from the rules.\n"
+        "\n"
         "# DECISION CHECKLIST (run for each item)\n"
         "1. Identify generic_name (the bare product type).\n"
         "2. Build canonical_name = generic + identity attributes + brand (no sizes).\n"
         "3. Extract quantities into variant_name + structured size fields.\n"
-        "4. Build family_key: strip diacritics, brand, numbers, packaging; keep variety/lactose/frozen splits; nominative plural.\n"
+        "4. Build family_key: REUSE a fitting entry from `allowed_family_keys` if one exists; otherwise strip diacritics, brand, numbers, packaging; keep variety/lactose/frozen splits; nominative plural.\n"
         "5. Pick category/subcategory from allowed_categories only.\n"
         "6. If any step was uncertain → needs_review=true, lower confidence.\n"
     )

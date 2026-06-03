@@ -14,6 +14,7 @@ import pytest
 from normalization.preprocess import (
     clean_product_name,
     detect_quantity_from_name,
+    detect_variant_code,
     parse_unit_price,
     parse_valid_dates,
     preprocess_raw_offer,
@@ -59,6 +60,72 @@ class TestStripDescriptors:
 
     def test_empty_input(self) -> None:
         assert strip_descriptors("") == ""
+
+
+class TestDetectVariantCode:
+    def test_extracts_alphanumeric_article_code(self) -> None:
+        assert (
+            detect_variant_code("Elektrinis virdulys ONEX, art. KT-S08, 1 vnt.")
+            == "art:KT-S08"
+        )
+
+    def test_two_kettle_models_get_distinct_codes(self) -> None:
+        # The exact bug: same name+size, different article -> must not merge.
+        a = detect_variant_code("Elektrinis virdulys ONEX, art. KT-S08, 1 vnt.")
+        b = detect_variant_code("Elektrinis virdulys ONEX, art. PK-3058B, 1 vnt.")
+        assert a != b
+
+    def test_numeric_article_code(self) -> None:
+        assert detect_variant_code("Kapų žvakė, art. 4700, 1 vnt.") == "art:4700"
+
+    def test_multiple_article_codes_are_joined(self) -> None:
+        assert (
+            detect_variant_code("Kapų žvakė art.0508 arba art.0532, 1 vnt.")
+            == "art:0508-0532"
+        )
+
+    def test_multi_token_code_is_kept_whole(self) -> None:
+        # Must not truncate to "HTD" — that would re-merge distinct SKUs.
+        assert (
+            detect_variant_code("Plaukų džiovintuvas BOMANN, art. HTD 889 CB, 1 vnt.")
+            == "art:HTD-889-CB"
+        )
+
+    def test_two_codes_sharing_a_prefix_stay_distinct(self) -> None:
+        a = detect_variant_code("Rankinis garintuvas CLATRONIC, art. DB 3717, 1 vnt.")
+        b = detect_variant_code("Rankinis garintuvas CLATRONIC, art. DB 4000, 1 vnt.")
+        assert a != b
+
+    def test_multipack_count_and_dimension(self) -> None:
+        assert (
+            detect_variant_code("Gvazdikų puokštė*, 50 cm, 1 puokštė – 30 vnt.")
+            == "x:30vnt|d:50cm"
+        )
+
+    def test_different_bouquet_quantities_differ(self) -> None:
+        a = detect_variant_code("Gvazdikų puokštė, 50 cm, 1 puokštė – 30 vnt.")
+        b = detect_variant_code("Gvazdikų puokštė, 50 cm, 1 puokštė – 9 vnt.")
+        assert a != b
+
+    def test_lone_single_unit_is_not_a_discriminator(self) -> None:
+        # "1 vnt" alone just means "a single item" — no code.
+        assert detect_variant_code("Elektrinis virdulys, 1 vnt.") is None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Bananai",
+            "Šviežias pienas Rokiškio 1 L",
+            "Artišokai",  # must not match the "art" prefix
+            "",
+        ],
+    )
+    def test_plain_products_have_no_code(self, name: str) -> None:
+        assert detect_variant_code(name) is None
+
+    def test_exposed_in_preprocess_output(self) -> None:
+        out = preprocess_raw_offer({"name": "Kapų žvakė, art. 4700, 1 vnt."})
+        assert out["detected_variant_code"] == "art:4700"
 
 
 class TestParseUnitPrice:
